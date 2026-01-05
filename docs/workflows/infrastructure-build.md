@@ -771,3 +771,155 @@ All operations should be idempotent:
 - Check if stack exists before creating
 - Skip completed steps on retry
 - Clean up partial failures before retry
+
+---
+
+## Verification Scripts
+
+Each phase has automated verification scripts that test the deployed infrastructure and save evidence.
+
+### Phase 1: Foundation Verification
+
+**Script:** `scripts/verify-phase1-foundation.sh`
+
+**Tests:**
+| Test | What it Verifies |
+|------|------------------|
+| IAM Roles stack exists | CloudFormation stack CREATE_COMPLETE |
+| EKS Cluster Role exists | IAM role created with correct policies |
+| EKS Node Group Role exists | IAM role for worker nodes |
+| Bastion Role exists | IAM role for bastion with SSM permissions |
+| VPC stack exists | CloudFormation stack CREATE_COMPLETE |
+| VPC is available | VPC state is 'available' |
+| VPC has dual CIDR | 10.0.0.0/16 + 100.64.0.0/16 |
+| Internet Gateway attached | IGW exists and attached to VPC |
+| NAT Gateway available | NAT Gateway in 'available' state |
+| Public subnets (3 AZs) | 3 public subnets created |
+| Private subnets (3 AZs) | 3 private subnets created |
+| Pod subnets (3 AZs) | 3 pod subnets (100.64.x.x) created |
+| Security Groups stack exists | CloudFormation stack CREATE_COMPLETE |
+| EKS Cluster SG exists | Security group for EKS control plane |
+| EKS Nodes SG exists | Security group for worker nodes |
+| Bastion stack exists | CloudFormation stack CREATE_COMPLETE |
+| Bastion instance running | EC2 instance in 'running' state |
+| Bastion in private subnet | No public IP assigned |
+| Bastion SSM connectivity | SSM agent online |
+| Bastion internet connectivity | Outbound via NAT Gateway works |
+
+**Run:**
+```bash
+./scripts/verify-phase1-foundation.sh
+```
+
+**Evidence saved to:** `evidence/phase1-foundation/`
+
+### Phase 2: EKS Verification
+
+**Script:** `scripts/verify-phase2-eks.sh`
+
+**Tests:**
+| Test | What it Verifies |
+|------|------------------|
+| EKS Cluster stack exists | CloudFormation stack CREATE_COMPLETE |
+| EKS Cluster is ACTIVE | Cluster status is ACTIVE |
+| EKS Cluster version is 1.34 | Correct Kubernetes version |
+| EKS Cluster endpoint exists | API server endpoint available |
+| EKS private endpoint enabled | Private access to cluster |
+| EKS logging enabled | Control plane logs to CloudWatch |
+| EKS secrets encryption | KMS encryption for secrets |
+| Node Groups stack exists | CloudFormation stack CREATE_COMPLETE |
+| General node group ACTIVE | Node group status ACTIVE |
+| Instance type t3a.xlarge | Correct instance type |
+| AMI is AL2023 | EKS optimized AMI |
+| Node group in pod subnets | Nodes in 100.64.x.x subnets |
+| Node group scaling config | Min 2, Desired 3 nodes |
+| kubectl can connect | kubectl cluster-info works |
+| Nodes are Ready | All nodes in Ready state |
+| Expected node count | >= 2 nodes running |
+| CoreDNS pods running | DNS pods healthy |
+| kube-proxy pods running | Network proxy pods healthy |
+| VPC CNI pods running | CNI plugin pods healthy |
+| OIDC issuer configured | IRSA OIDC issuer exists |
+| OIDC provider in IAM | IAM OIDC provider created |
+
+**Run:**
+```bash
+./scripts/verify-phase2-eks.sh
+```
+
+**Evidence saved to:** `evidence/phase2-eks/`
+
+### Evidence Collection
+
+Each verification script saves evidence to the `evidence/` directory:
+
+```
+evidence/
+├── phase1-foundation/
+│   ├── iam-roles-stack.txt
+│   ├── eks-cluster-role.json
+│   ├── vpc-state.txt
+│   ├── vpc-cidrs.txt
+│   ├── nat-gateway.txt
+│   ├── bastion-ssm-status.txt
+│   └── bastion-network-test.txt
+├── phase2-eks/
+│   ├── eks-cluster-status.txt
+│   ├── eks-cluster-version.txt
+│   ├── nodegroup-instance-type.txt
+│   ├── kubectl-nodes.txt
+│   ├── coredns-pods.txt
+│   └── cluster-full-description.json
+└── phase3-addons/
+    └── (created after Phase 3)
+```
+
+### Agent Verification Workflow
+
+The agent must run verification after each phase:
+
+```python
+def deploy_phase(phase_num: int, stacks: list):
+    """Deploy phase with verification"""
+
+    # Deploy all stacks in phase
+    for stack in stacks:
+        deploy_stack(stack)
+        wait_for_stack_complete(stack)
+
+    # Run verification
+    result = run_verification(f"scripts/verify-phase{phase_num}-*.sh")
+
+    if result.failed_count > 0:
+        raise PhaseVerificationError(
+            f"Phase {phase_num} verification failed: "
+            f"{result.failed_count} tests failed"
+        )
+
+    # Log evidence
+    log_evidence(f"evidence/phase{phase_num}-*/")
+
+    return result
+```
+
+### Verification Summary Format
+
+After each phase, report verification status:
+
+```
+============================================
+PHASE 1: FOUNDATION VERIFICATION
+============================================
+Timestamp: 2025-01-04T21:45:00Z
+Environment: dev
+
+Tests Passed: 18/20
+Tests Failed: 2/20
+
+Failed Tests:
+  - Bastion internet connectivity: TIMEOUT
+  - NAT Gateway available: PENDING
+
+Evidence Location: evidence/phase1-foundation/
+============================================
+```

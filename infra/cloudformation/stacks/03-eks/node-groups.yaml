@@ -51,7 +51,7 @@ Parameters:
   # Node Group Sizing
   GeneralNodeInstanceTypes:
     Type: CommaDelimitedList
-    Default: 't3.large,t3a.large,m5.large,m5a.large'
+    Default: 't3a.xlarge'
     Description: Instance types for general purpose nodes
 
   GeneralNodeMinSize:
@@ -180,7 +180,7 @@ Resources:
         Owner: !Ref Owner
         SecurityLevel: internal
         IaC_Version: !Ref IaCVersion
-        NIST_Control: SC-7,AC-6
+        NIST_Control: SC-7_AC-6
       UpdateConfig:
         MaxUnavailable: 1
 
@@ -204,8 +204,7 @@ Resources:
         MaxSize: 5
         DesiredSize: 3
       InstanceTypes:
-        - m5.large
-        - m5a.large
+        - t3a.xlarge
       AmiType: !Ref AmiType
       CapacityType: ON_DEMAND  # Always on-demand for system workloads
       DiskSize: !Ref NodeDiskSize
@@ -222,7 +221,7 @@ Resources:
         Owner: !Ref Owner
         SecurityLevel: restricted
         IaC_Version: !Ref IaCVersion
-        NIST_Control: SC-7,AC-6
+        NIST_Control: SC-7_AC-6
       UpdateConfig:
         MaxUnavailable: 1
 

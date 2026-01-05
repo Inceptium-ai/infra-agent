@@ -133,6 +133,71 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 
 ---
 
+## Compute Requirements
+
+### EKS Add-on Resource Requirements
+
+| Component | CPU Request | Memory Request | Replicas | Total CPU | Total Memory |
+|-----------|-------------|----------------|----------|-----------|--------------|
+| **Istio Control Plane** |
+| istiod | 500m | 2Gi | 2 | 1000m | 4Gi |
+| istio-ingressgateway | 100m | 128Mi | 2 | 200m | 256Mi |
+| istio sidecars (per pod) | 100m | 128Mi | ~20 | 2000m | 2.5Gi |
+| **Observability (LGTM)** |
+| Loki | 500m | 1Gi | 3 | 1500m | 3Gi |
+| Grafana | 250m | 512Mi | 2 | 500m | 1Gi |
+| Tempo | 500m | 1Gi | 2 | 1000m | 2Gi |
+| Mimir | 500m | 1Gi | 2 | 1000m | 2Gi |
+| **Security & Operations** |
+| Trivy Operator | 100m | 256Mi | 1 | 100m | 256Mi |
+| Velero | 100m | 256Mi | 1 | 100m | 256Mi |
+| Kubecost | 200m | 512Mi | 1 | 200m | 512Mi |
+| Headlamp | 100m | 128Mi | 1 | 100m | 128Mi |
+| **AWS Controllers** |
+| AWS LB Controller | 100m | 128Mi | 2 | 200m | 256Mi |
+| EBS CSI Driver | 100m | 128Mi | 2 | 200m | 256Mi |
+| **Kubernetes Core** |
+| CoreDNS | 100m | 70Mi | 2 | 200m | 140Mi |
+| kube-proxy | 100m | 128Mi | per node | 300m | 384Mi |
+| VPC CNI (aws-node) | 25m | 64Mi | per node | 75m | 192Mi |
+
+### Total Resource Summary
+
+| Resource | Base Estimate | With 30% Buffer |
+|----------|---------------|-----------------|
+| **Total CPU** | ~8.3 vCPU | ~11 vCPU |
+| **Total Memory** | ~16.5 Gi | ~22 Gi |
+
+### Worker Node Sizing
+
+Based on compute requirements, the recommended instance type is **t3a.xlarge**:
+
+| Instance Type | vCPU | Memory | Network | Hourly Cost | Monthly (3 nodes) |
+|---------------|------|--------|---------|-------------|-------------------|
+| t3a.large | 2 | 8 Gi | Up to 5 Gbps | $0.0752 | ~$165 |
+| **t3a.xlarge** ✓ | 4 | 16 Gi | Up to 5 Gbps | $0.1504 | ~$330 |
+| m5a.xlarge | 4 | 16 Gi | Up to 10 Gbps | $0.172 | ~$375 |
+
+**Selected Configuration:**
+- Instance Type: `t3a.xlarge` (4 vCPU, 16 Gi RAM)
+- Min Nodes: 2
+- Desired Nodes: 3
+- Max Nodes: 10
+- Disk: 100 GB gp3 (3,000 IOPS, 125 MB/s)
+- AMI: AL2023_x86_64_STANDARD (EKS Optimized)
+
+**Cost Estimate (DEV environment):**
+| Resource | Monthly Cost |
+|----------|--------------|
+| EKS Control Plane | $73 |
+| Worker Nodes (3x t3a.xlarge) | ~$330 |
+| NAT Gateways (3x) | ~$100 |
+| EBS Storage (3x 100GB gp3) | ~$24 |
+| Data Transfer | ~$20-50 |
+| **Total DEV** | **~$550-580/month** |
+
+---
+
 ## Workflow Diagrams
 
 ### Deployment Workflow
@@ -425,3 +490,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.0 | 2025-01-04 | AI Agent | Initial architecture document |
 | 1.1 | 2025-01-04 | AI Agent | Added CloudFormation and AMI constraints from lessons learned |
 | 1.2 | 2025-01-04 | AI Agent | Added Bastion Access Architecture (SSM Session Manager) section |
+| 1.3 | 2025-01-04 | AI Agent | Added Compute Requirements section with EKS add-on resource estimates |

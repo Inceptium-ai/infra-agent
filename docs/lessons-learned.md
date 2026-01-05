@@ -233,6 +233,56 @@ response = eks.describe_addon_versions()
 
 ---
 
+## 10. IRSA OIDC Condition Syntax in CloudFormation
+
+**Error:**
+```
+Template format error: [/Resources/VpcCniRole/Properties/AssumeRolePolicyDocument/Statement/0/Condition/StringEquals] map keys must be strings; received a map instead
+```
+
+**Cause:**
+IRSA roles require dynamic OIDC URL in the Condition keys. Using `!Sub` inside a YAML map key doesn't work.
+
+**Wrong approach:**
+```yaml
+Condition:
+  StringEquals:
+    !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:aws-node'
+```
+
+**Fix:**
+Use `Fn::Sub` with a JSON string for the entire AssumeRolePolicyDocument:
+```yaml
+AssumeRolePolicyDocument:
+  Fn::Sub:
+    - |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "${OidcArn}"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "${OidcUrl}:sub": "system:serviceaccount:kube-system:aws-node",
+                "${OidcUrl}:aud": "sts.amazonaws.com"
+              }
+            }
+          }
+        ]
+      }
+    - OidcArn: !Ref OidcProviderArn
+      OidcUrl: !Ref OidcProviderUrl
+```
+
+**Lesson:**
+When CloudFormation YAML conditions need dynamic keys, use JSON string with Fn::Sub to substitute variables in keys.
+
+---
+
 ## Best Practices Derived
 
 1. **Validate CloudFormation templates** before deployment with `cfn-lint`

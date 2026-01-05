@@ -53,25 +53,25 @@ Parameters:
     Default: '1.0.0'
     Description: Version of the IaC template
 
-  # Add-on Versions (update as needed)
+  # Add-on Versions (EKS 1.34 compatible - verified Jan 2025)
   VpcCniVersion:
     Type: String
-    Default: v1.19.0-eksbuild.1
+    Default: v1.21.1-eksbuild.1
     Description: Version of the VPC CNI add-on
 
   CoreDnsVersion:
     Type: String
-    Default: v1.11.4-eksbuild.2
+    Default: v1.12.4-eksbuild.1
     Description: Version of the CoreDNS add-on
 
   KubeProxyVersion:
     Type: String
-    Default: v1.32.0-eksbuild.2
+    Default: v1.34.1-eksbuild.2
     Description: Version of the kube-proxy add-on
 
   EbsCsiVersion:
     Type: String
-    Default: v1.37.0-eksbuild.1
+    Default: v1.54.0-eksbuild.1
     Description: Version of the EBS CSI Driver add-on
 
 Metadata:
@@ -114,16 +114,28 @@ Resources:
       RoleName: !Sub '${ProjectName}-${Environment}-vpc-cni-role'
       Description: IAM role for VPC CNI (IRSA)
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref OidcProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:aws-node'
-                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:kube-system:aws-node",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OidcProviderArn
+            OidcUrl: !Ref OidcProviderUrl
       ManagedPolicyArns:
         - !Ref VpcCniPolicyArn
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
@@ -150,16 +162,28 @@ Resources:
       RoleName: !Sub '${ProjectName}-${Environment}-ebs-csi-role'
       Description: IAM role for EBS CSI Driver (IRSA)
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref OidcProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:ebs-csi-controller-sa'
-                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OidcProviderArn
+            OidcUrl: !Ref OidcProviderUrl
       ManagedPolicyArns:
         - !Ref EbsCsiDriverPolicyArn
         - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
@@ -186,16 +210,28 @@ Resources:
       RoleName: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role'
       Description: IAM role for AWS Load Balancer Controller (IRSA)
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref OidcProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:aws-load-balancer-controller'
-                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:kube-system:aws-load-balancer-controller",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OidcProviderArn
+            OidcUrl: !Ref OidcProviderUrl
       ManagedPolicyArns:
         - !Ref AwsLbControllerPolicyArn
       Tags:
