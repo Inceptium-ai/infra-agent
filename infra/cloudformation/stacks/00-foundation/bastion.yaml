@@ -137,6 +137,38 @@ Resources:
           mv /tmp/k9s /usr/local/bin/
           k9s version || true
 
+          # Install stern (multi-pod log tailing)
+          echo "Installing stern..."
+          curl -sS -L "https://github.com/stern/stern/releases/latest/download/stern_linux_amd64.tar.gz" | tar xz -C /tmp
+          mv /tmp/stern /usr/local/bin/
+          stern --version || true
+
+          # Install kubectx and kubens (context/namespace switching)
+          echo "Installing kubectx/kubens..."
+          curl -sS -L "https://github.com/ahmetb/kubectx/releases/latest/download/kubectx" -o /usr/local/bin/kubectx
+          curl -sS -L "https://github.com/ahmetb/kubectx/releases/latest/download/kubens" -o /usr/local/bin/kubens
+          chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens
+
+          # Install yq (YAML processor)
+          echo "Installing yq..."
+          curl -sS -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+          yq --version || true
+
+          # Install istioctl (Istio CLI)
+          echo "Installing istioctl..."
+          curl -sS -L https://istio.io/downloadIstio | ISTIO_VERSION=1.24.2 sh -
+          mv istio-*/bin/istioctl /usr/local/bin/
+          rm -rf istio-*
+          istioctl version --remote=false || true
+
+          # Install velero CLI (backup management)
+          echo "Installing velero CLI..."
+          curl -sS -L "https://github.com/vmware-tanzu/velero/releases/latest/download/velero-v1.15.2-linux-amd64.tar.gz" | tar xz -C /tmp
+          mv /tmp/velero-*/velero /usr/local/bin/
+          rm -rf /tmp/velero-*
+          velero version --client-only || true
+
           # Configure kubeconfig for ec2-user
           echo "Configuring kubeconfig for ec2-user..."
           mkdir -p /home/ec2-user/.kube
@@ -164,16 +196,28 @@ Resources:
           alias kd='kubectl describe'
           alias kl='kubectl logs'
           alias kex='kubectl exec -it'
+          alias kns='kubens'
+          alias kctx='kubectx'
 
           # kubectl completion
           source <(kubectl completion bash)
           complete -F __start_kubectl k
+
+          # helm completion
+          source <(helm completion bash)
+
+          # stern completion
+          source <(stern --completion bash)
 
           # AWS region
           export AWS_DEFAULT_REGION=${AWS::Region}
 
           # Path
           export PATH=$PATH:/usr/local/bin
+
+          # Helpful functions
+          kexec() { kubectl exec -it "$1" -- /bin/sh; }
+          klogs() { stern "$1" --tail 100; }
           BASHRC
           chown ec2-user:ec2-user /home/ec2-user/.bashrc
 
@@ -257,6 +301,13 @@ Resources:
           echo "kubectl: $(/usr/local/bin/kubectl version --client -o yaml | grep gitVersion)"
           echo "helm: $(helm version --short)"
           echo "eksctl: $(eksctl version)"
+          echo "k9s: $(k9s version --short 2>/dev/null || echo 'installed')"
+          echo "stern: $(stern --version 2>/dev/null || echo 'installed')"
+          echo "kubectx: $(which kubectx)"
+          echo "kubens: $(which kubens)"
+          echo "yq: $(yq --version)"
+          echo "istioctl: $(istioctl version --remote=false 2>/dev/null || echo 'installed')"
+          echo "velero: $(velero version --client-only 2>/dev/null | head -1 || echo 'installed')"
           echo ""
 
           # Signal completion
