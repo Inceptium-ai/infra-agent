@@ -187,6 +187,10 @@ Resources:
             - Type: authenticator
             - Type: controllerManager
             - Type: scheduler
+      # Enable API-based access management (in addition to ConfigMap)
+      # This allows using AWS::EKS::AccessEntry resources for RBAC
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-cluster'

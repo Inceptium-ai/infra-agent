@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EKS Access Configuration - IAM Role to Kubernetes RBAC Mapping
+  Uses EKS Access Entries (API mode) for managing cluster access
+  NIST 800-53 R5 Controls: AC-2 (Account Management), AC-6 (Least Privilege)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  ClusterName:
+    Type: String
+    Description: Name of the EKS cluster
+
+  BastionRoleArn:
+    Type: String
+    Description: ARN of the bastion IAM role
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: EKS Configuration
+        Parameters:
+          - ClusterName
+          - BastionRoleArn
+
+Resources:
+  #############################################
+  # Bastion Access Entry - Cluster Admin
+  #############################################
+  BastionAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !Ref BastionRoleArn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion-access'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-2_AC-6
+
+Outputs:
+  BastionAccessEntryArn:
+    Description: ARN of the bastion access entry
+    Value: !GetAtt BastionAccessEntry.AccessEntryArn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-bastion-access-entry-arn'

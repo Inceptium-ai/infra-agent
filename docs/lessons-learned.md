@@ -283,6 +283,182 @@ When CloudFormation YAML conditions need dynamic keys, use JSON string with Fn::
 
 ---
 
+## 11. CloudFormation UserData Changes Don't Replace EC2 Instances
+
+**Issue:**
+Updated UserData in CloudFormation but the EC2 instance wasn't replaced - old user data still running.
+
+**Cause:**
+CloudFormation treats UserData changes as non-replacement updates. The instance metadata is updated, but cloud-init doesn't re-run on an existing instance.
+
+**Fix:**
+To force instance replacement, either:
+1. Delete and recreate the stack
+2. Terminate the instance manually (CloudFormation won't auto-recreate)
+3. Change a property that forces replacement (e.g., `SubnetId`, `ImageId`)
+
+**Better approach:** Add a metadata version tag that changes with UserData:
+```yaml
+BastionHost:
+  Type: AWS::EC2::Instance
+  Metadata:
+    UserDataVersion: "1.0.1"  # Increment to force replacement
+  Properties:
+    UserData: ...
+```
+
+Or use AutoScaling Group with Launch Template for automatic replacement.
+
+**Lesson:**
+UserData changes alone don't trigger EC2 instance replacement. Plan for explicit replacement strategy.
+
+---
+
+## 12. Bastion IAM Role Needs EKS Cluster Access
+
+**Error:**
+```
+error: You must be logged in to the server (the server has asked for the client to provide credentials)
+```
+
+**Cause:**
+The bastion's IAM role was not authorized to access the EKS cluster. EKS requires explicit mapping of IAM roles to Kubernetes RBAC.
+
+**Fix:**
+Add the bastion role to EKS access using one of:
+
+**Option 1: EKS Access Entries (newer, recommended)**
+```bash
+aws eks create-access-entry \
+    --cluster-name infra-agent-dev-cluster \
+    --principal-arn arn:aws:iam::ACCOUNT:role/infra-agent-dev-bastion-role \
+    --type STANDARD
+
+aws eks associate-access-policy \
+    --cluster-name infra-agent-dev-cluster \
+    --principal-arn arn:aws:iam::ACCOUNT:role/infra-agent-dev-bastion-role \
+    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+    --access-scope type=cluster
+```
+
+**Option 2: aws-auth ConfigMap (legacy)**
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: arn:aws:iam::ACCOUNT:role/infra-agent-dev-bastion-role
+      username: bastion
+      groups:
+        - system:masters
+```
+
+**Lesson:**
+Always configure EKS access for bastion/admin roles during cluster setup. Include this in IaC for reproducibility.
+
+---
+
+## 13. Always Use IaC for Infrastructure Changes
+
+**Issue:**
+Used AWS CLI to add EKS access entry instead of CloudFormation, creating configuration drift.
+
+**Bad Practice:**
+```bash
+# Don't do this - creates drift from IaC
+aws eks create-access-entry --cluster-name ... --principal-arn ...
+```
+
+**Correct Approach:**
+Add access entries to CloudFormation:
+```yaml
+# In cluster.yaml or separate access-config.yaml
+BastionAccessEntry:
+  Type: AWS::EKS::AccessEntry
+  Properties:
+    ClusterName: !Ref EksCluster
+    PrincipalArn: !Ref BastionRoleArn
+    Type: STANDARD
+    AccessPolicies:
+      - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+        AccessScope:
+          Type: cluster
+```
+
+**Lesson:**
+ALL infrastructure changes must go through IaC (CloudFormation). Never use CLI for permanent changes - it creates drift and makes infrastructure non-reproducible.
+
+---
+
+## 14. VPC CNI Add-on Verification Checklist
+
+**Before deploying VPC CNI add-on, verify:**
+
+1. **IAM Role**: Ensure `AmazonEKS_CNI_Policy` is attached
+   ```bash
+   aws iam list-attached-role-policies --role-name <vpc-cni-role>
+   ```
+
+2. **Subnet IP Space**: Pod subnets should have ample IPs (/18 or larger recommended)
+   ```bash
+   aws ec2 describe-subnets --subnet-ids <pod-subnet-ids> \
+     --query 'Subnets[*].{CIDR:CidrBlock,AvailableIPs:AvailableIpAddressCount}'
+   ```
+
+3. **Version Compatibility**: Check CNI version matches EKS version
+   ```bash
+   aws eks describe-addon-versions --addon-name vpc-cni --kubernetes-version <version>
+   ```
+
+4. **Custom Networking**: If using secondary CIDR (100.64.x.x), set:
+   ```json
+   {
+     "env": {
+       "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
+       "ENI_CONFIG_LABEL_DEF": "topology.kubernetes.io/zone"
+     }
+   }
+   ```
+
+5. **Monitor Logs**: Check ipamd logs for errors
+   ```bash
+   kubectl logs -n kube-system -l k8s-app=aws-node
+   ```
+
+**Lesson:**
+VPC CNI add-on creation takes 10-15 minutes. Verify IAM, subnet space, and version compatibility beforehand.
+
+---
+
+## 15. curl-minimal Conflict on Amazon Linux 2023
+
+**Error:**
+```
+package curl-minimal conflicts with curl provided by curl-8.x
+```
+
+**Cause:**
+Amazon Linux 2023 ships with `curl-minimal` which conflicts with full `curl` package.
+
+**Fix:**
+Don't install `curl` on AL2023 - `curl-minimal` provides the `curl` command. Remove `curl` from `dnf install` commands.
+
+```bash
+# Wrong - causes conflict
+dnf install -y curl wget
+
+# Correct - curl-minimal already provides curl
+dnf install -y wget
+```
+
+**Lesson:**
+AL2023 uses minimal packages by default. Check pre-installed packages before adding to install list.
+
+---
+
 ## Best Practices Derived
 
 1. **Validate CloudFormation templates** before deployment with `cfn-lint`
