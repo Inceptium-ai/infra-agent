@@ -68,6 +68,23 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | Blue/Green deployments to PRD | Zero downtime requirement | ALB target group switching |
 | 4-hour RTO for DR | Business continuity | Velero backups, CloudFormation re-provisioning |
 
+### CloudFormation Constraints (Lessons Learned)
+| Constraint | Impact | Mitigation |
+|------------|--------|------------|
+| Export value max 1024 chars | Cannot export EKS CertificateAuthorityData | Store in SSM Parameter Store or retrieve via API |
+| No commas in tag values | NIST_Control tags like `AC-2,AC-6` fail validation | Use underscores: `AC-2_AC-6` |
+| SSM parameters must exist | `{{resolve:ssm:...}}` fails if parameter missing | Use static values until bootstrap stack creates params |
+| Export names must be unique | Duplicate exports across stacks cause failures | Use descriptive prefixes (e.g., `eks-cluster-created-sg-id`) |
+| EKS creates log groups | Defining same log group causes conflict | Add `DependsOn` to create log group BEFORE EKS cluster |
+| EKS upgrade path | Can only upgrade one minor version at a time | Plan sequential upgrades (1.32 → 1.33 → 1.34) |
+
+### AMI and Instance Constraints
+| Constraint | Impact | Mitigation |
+|------------|--------|------------|
+| AMI IDs are region-specific | Hardcoded AMIs break cross-region | Use SSM public parameters for dynamic lookup |
+| AL2023 has curl-minimal | Installing curl causes package conflict | Skip curl install or use `--allowerasing` |
+| User data must match OS | AL2023 uses dnf, Ubuntu uses apt | Verify AMI matches expected OS before deployment |
+
 ---
 
 ## Dependencies
@@ -218,6 +235,63 @@ Phase 1: Foundation              Phase 2: EKS                Phase 3: Services
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Bastion Access Architecture (SSM Session Manager)
+
+The bastion host uses **AWS Systems Manager Session Manager** instead of traditional SSH. This is a Zero Trust approach that eliminates SSH key management and exposed ports.
+
+```
+┌─────────────────┐                    ┌─────────────────┐                    ┌─────────────────┐
+│   Operator      │                    │   AWS SSM       │                    │    Bastion      │
+│   Workstation   │                    │   Service       │                    │    (Private)    │
+│                 │                    │                 │                    │                 │
+│  ┌───────────┐  │   HTTPS (443)      │  ┌───────────┐  │   SSM Agent        │  ┌───────────┐  │
+│  │ AWS CLI + │  │ ─────────────────► │  │ Session   │  │ ◄───────────────── │  │ SSM Agent │  │
+│  │ SSM Plugin│  │   WebSocket        │  │ Manager   │  │   Outbound HTTPS   │  │           │  │
+│  └───────────┘  │                    │  └───────────┘  │                    │  └───────────┘  │
+└─────────────────┘                    └─────────────────┘                    └─────────────────┘
+        │                                      │                                      │
+        │                                      │                                      │
+   IAM Auth +                            TLS 1.2/1.3                           No inbound
+   MFA (optional)                        Encryption                            ports open
+```
+
+**Security Features:**
+
+| Feature | Traditional SSH | SSM Session Manager |
+|---------|-----------------|---------------------|
+| **Inbound Ports** | Port 22 open | No inbound ports |
+| **Key Management** | SSH key pairs | IAM credentials |
+| **Authentication** | Key-based | IAM + optional MFA |
+| **Audit Trail** | Manual logging | CloudTrail automatic |
+| **Session Logging** | Optional | S3/CloudWatch Logs |
+| **Network Path** | Direct to instance | Via AWS control plane |
+
+**Protocol Flow:**
+1. Operator runs `aws ssm start-session --target <instance-id>`
+2. AWS CLI authenticates via IAM credentials (supports MFA)
+3. SSM service validates IAM permissions (`ssm:StartSession`)
+4. WebSocket connection established over HTTPS (port 443)
+5. SSM Agent on bastion (outbound only) connects to SSM service
+6. Bidirectional encrypted tunnel created
+7. All commands logged to CloudTrail
+
+**NIST 800-53 R5 Controls Satisfied:**
+
+| Control | Implementation |
+|---------|---------------|
+| AC-2 (Account Management) | IAM-based access, no shared SSH keys |
+| AC-6 (Least Privilege) | Fine-grained IAM policies per user/role |
+| AU-2 (Audit Events) | All sessions logged to CloudTrail |
+| AU-3 (Audit Content) | Session recordings to S3 (optional) |
+| SC-7 (Boundary Protection) | No inbound ports, outbound-only agent |
+| SC-8 (Transmission Confidentiality) | TLS 1.2+ encryption end-to-end |
+| IA-2 (Identification) | IAM identity, optional MFA |
+
+**Connection Script:** `scripts/bastion-connect.sh`
+```bash
+./scripts/bastion-connect.sh  # Interactive shell on bastion
+```
+
 ### Agent Architecture
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -349,3 +423,5 @@ Phase 1: Foundation              Phase 2: EKS                Phase 3: Services
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-01-04 | AI Agent | Initial architecture document |
+| 1.1 | 2025-01-04 | AI Agent | Added CloudFormation and AMI constraints from lessons learned |
+| 1.2 | 2025-01-04 | AI Agent | Added Bastion Access Architecture (SSM Session Manager) section |
