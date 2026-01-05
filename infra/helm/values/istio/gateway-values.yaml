@@ -1,0 +1,82 @@
+# Istio Ingress Gateway Helm Values
+# NIST SC-7: Boundary protection via ingress gateway
+
+name: istio-ingress
+
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+service:
+  # Use AWS Load Balancer Controller annotations
+  type: LoadBalancer
+  annotations:
+    # AWS Load Balancer Controller annotations
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    # SSL/TLS termination at ALB
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    # Health check configuration
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: HTTP
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: /healthz/ready
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "15021"
+
+  ports:
+    - name: http2
+      port: 80
+      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443
+    - name: status-port
+      port: 15021
+      targetPort: 15021
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 2000m
+    memory: 1024Mi
+
+# Pod disruption budget for HA
+podDisruptionBudget:
+  minAvailable: 1
+
+# Affinity rules for HA
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: istio-ingress
+          topologyKey: kubernetes.io/hostname
+
+# Topology spread for multi-AZ deployment
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: istio-ingress
+
+# Security context
+securityContext:
+  runAsUser: 1337
+  runAsGroup: 1337
+  runAsNonRoot: true
+
+# Service account
+serviceAccount:
+  create: true
+  name: istio-ingress

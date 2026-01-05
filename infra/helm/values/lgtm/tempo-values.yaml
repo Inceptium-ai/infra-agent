@@ -1,0 +1,91 @@
+# Tempo Helm Values - Distributed Tracing
+# NIST AU-2: Audit Events (trace correlation)
+
+tempo:
+  # Storage backend configuration
+  storage:
+    trace:
+      backend: s3
+      s3:
+        # Will be populated from environment
+        region: us-east-1
+        # bucket will be set via --set flag during install
+
+  # Receivers configuration
+  receivers:
+    jaeger:
+      protocols:
+        thrift_http:
+          endpoint: 0.0.0.0:14268
+        grpc:
+          endpoint: 0.0.0.0:14250
+    zipkin:
+      endpoint: 0.0.0.0:9411
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+  # Retention configuration
+  retention: 720h  # 30 days
+
+  # Query frontend configuration
+  queryFrontend:
+    search:
+      duration_slo: 5s
+      throughput_bytes_slo: 1073741824
+
+  # Compactor configuration
+  compactor:
+    compaction:
+      block_retention: 720h
+
+  # Server configuration
+  server:
+    http_listen_port: 3200
+
+# Deployment configuration
+replicas: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Service configuration
+service:
+  type: ClusterIP
+
+# Persistence
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: gp3
+
+# Service account for IRSA
+serviceAccount:
+  create: true
+  name: tempo
+  annotations: {}
+    # eks.amazonaws.com/role-arn will be added during deployment
+
+# Pod affinity for HA
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: tempo
+          topologyKey: kubernetes.io/hostname
+
+# Metrics for monitoring
+metricsGenerator:
+  enabled: true
+  remoteWriteUrl: "http://mimir.observability.svc.cluster.local:8080/api/v1/push"

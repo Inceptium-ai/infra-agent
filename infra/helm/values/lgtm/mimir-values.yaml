@@ -1,0 +1,205 @@
+# Mimir Helm Values - Metrics Storage (Prometheus-compatible)
+# NIST AU-2: Audit Events (metrics collection)
+
+# Global configuration
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: mimir-s3-credentials
+        optional: true
+
+# Mimir configuration
+mimir:
+  # Structured configuration
+  structuredConfig:
+    # Multi-tenancy disabled for simplicity
+    multitenancy_enabled: false
+
+    # Limits configuration
+    limits:
+      max_global_series_per_user: 1500000
+      max_global_series_per_metric: 50000
+      ingestion_rate: 100000
+      ingestion_burst_size: 200000
+
+    # Block storage configuration
+    blocks_storage:
+      backend: s3
+      s3:
+        # Will be populated from environment
+        region: us-east-1
+        # bucket_name will be set via --set flag
+
+      tsdb:
+        dir: /data/tsdb
+
+      bucket_store:
+        sync_dir: /data/tsdb-sync
+
+    # Ruler storage
+    ruler_storage:
+      backend: s3
+      s3:
+        region: us-east-1
+
+    # Alertmanager storage
+    alertmanager_storage:
+      backend: s3
+      s3:
+        region: us-east-1
+
+    # Server configuration
+    server:
+      http_listen_port: 8080
+      grpc_listen_port: 9095
+
+    # Distributor configuration
+    distributor:
+      ring:
+        kvstore:
+          store: memberlist
+
+    # Ingester configuration
+    ingester:
+      ring:
+        kvstore:
+          store: memberlist
+        replication_factor: 3
+
+    # Store gateway configuration
+    store_gateway:
+      sharding_ring:
+        kvstore:
+          store: memberlist
+
+    # Compactor configuration
+    compactor:
+      data_dir: /data/compactor
+      sharding_ring:
+        kvstore:
+          store: memberlist
+
+# Component replicas
+distributor:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+ingester:
+  replicas: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: gp3
+  zoneAwareReplication:
+    enabled: true
+
+querier:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+query_frontend:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+store_gateway:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: gp3
+
+compactor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: gp3
+
+ruler:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+alertmanager:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  persistentVolume:
+    enabled: true
+    size: 1Gi
+    storageClass: gp3
+
+# Service account for IRSA
+serviceAccount:
+  create: true
+  name: mimir
+  annotations: {}
+    # eks.amazonaws.com/role-arn will be added during deployment
+
+# Memberlist configuration
+memberlist:
+  service:
+    publishNotReadyAddresses: true
+
+# NGINX gateway
+nginx:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

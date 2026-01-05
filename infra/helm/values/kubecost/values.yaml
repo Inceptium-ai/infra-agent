@@ -1,0 +1,165 @@
+# Kubecost Helm Values - Cost Management
+# NIST PM-3: Information Resources (cost tracking)
+
+# Global configuration
+global:
+  # Grafana integration (use existing Grafana)
+  grafana:
+    enabled: false
+    proxy: false
+
+  # Prometheus integration (use Mimir)
+  prometheus:
+    enabled: false
+    fqdn: http://mimir-nginx.observability.svc.cluster.local:80/prometheus
+
+# Kubecost configuration
+kubecostModel:
+  # Resource allocation
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # ETL configuration
+  etl: true
+  etlHourlyStoreDurationHours: 168  # 7 days
+  etlDailyStoreDurationDays: 90    # 90 days
+
+  # AWS integration
+  cloudIntegration: true
+
+# Cost analyzer configuration
+costAnalyzer:
+  # Resource allocation
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Persistence for cost data
+  persistentVolume:
+    enabled: true
+    size: 32Gi
+    storageClass: gp3
+
+# Frontend configuration
+kubecostFrontend:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Networking configuration
+networkCosts:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Cluster controller for recommendations
+clusterController:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Product configuration
+kubecostProductConfigs:
+  # Cluster name
+  clusterName: infra-agent-dev-cluster
+
+  # Currency
+  currencyCode: USD
+
+  # AWS Spot instance data feed
+  spotLabel: eks.amazonaws.com/capacityType
+  spotLabelValue: SPOT
+
+  # AWS integration
+  awsServiceKeyName: ""  # Will use IRSA
+  awsServiceKeyPassword: ""
+  awsSpotDataRegion: us-east-1
+  awsSpotDataBucket: ""  # Optional: for spot pricing data
+
+  # Shared costs
+  sharedNamespaces: "kube-system,istio-system,observability"
+  sharedOverhead: "0"
+
+  # Savings recommendations
+  defaultModelPricing:
+    enabled: true
+    CPU: 0.031611
+    RAM: 0.004237
+    GPU: 0.95
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 9090
+
+# Ingress (will use Istio Gateway)
+ingress:
+  enabled: false
+
+# Service account for IRSA
+serviceAccount:
+  create: true
+  name: kubecost
+  annotations: {}
+    # eks.amazonaws.com/role-arn will be added during deployment
+
+# RBAC
+rbac:
+  create: true
+
+# Prometheus node exporter (use existing)
+prometheus:
+  nodeExporter:
+    enabled: false
+  kubeStateMetrics:
+    enabled: false
+  server:
+    enabled: false
+
+# Grafana dashboards
+grafana:
+  enabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+
+# Pod affinity
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: cost-analyzer
+          topologyKey: kubernetes.io/hostname
+
+# Tolerations
+tolerations: []
+
+# Node selector
+nodeSelector: {}

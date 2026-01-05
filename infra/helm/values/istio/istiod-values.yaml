@@ -1,0 +1,92 @@
+# Istiod (Istio Control Plane) Helm Values
+# NIST SC-8: mTLS for transmission confidentiality
+
+global:
+  hub: docker.io/istio
+  tag: 1.24.0
+  istioNamespace: istio-system
+
+  # mTLS mode - STRICT for NIST SC-8 compliance
+  mtls:
+    enabled: true
+
+  # Proxy configuration
+  proxy:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 2000m
+        memory: 1024Mi
+
+    # Access logging for NIST AU-2
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+
+  # Enable tracing
+  tracer:
+    zipkin:
+      address: tempo.observability.svc.cluster.local:9411
+
+meshConfig:
+  # Enable access logging for all workloads (NIST AU-2)
+  accessLogFile: /dev/stdout
+  accessLogEncoding: JSON
+
+  # Default mTLS mode - STRICT (NIST SC-8)
+  defaultConfig:
+    holdApplicationUntilProxyStarts: true
+    tracing:
+      sampling: 100
+      zipkin:
+        address: tempo.observability.svc.cluster.local:9411
+
+  # Enable auto mTLS
+  enableAutoMtls: true
+
+  # Outbound traffic policy
+  outboundTrafficPolicy:
+    mode: ALLOW_ANY
+
+pilot:
+  autoscaleEnabled: true
+  autoscaleMin: 2
+  autoscaleMax: 5
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 1000m
+      memory: 4Gi
+
+  # Enable status updates
+  env:
+    PILOT_ENABLE_STATUS: true
+
+  # Node affinity for HA
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: istiod
+            topologyKey: kubernetes.io/hostname
+
+# Telemetry configuration
+telemetry:
+  enabled: true
+  v2:
+    enabled: true
+    prometheus:
+      enabled: true
+
+# Sidecar injector configuration
+sidecarInjectorWebhook:
+  enableNamespacesByDefault: false
+  rewriteAppHTTPProbe: true

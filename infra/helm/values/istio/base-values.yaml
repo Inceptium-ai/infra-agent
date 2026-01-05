@@ -1,0 +1,27 @@
+# Istio Base Helm Values
+# This installs Istio CRDs and cluster-wide resources
+
+global:
+  # Use distroless images for security
+  hub: docker.io/istio
+  tag: 1.24.0
+
+  # Enable istio-cni for enhanced security
+  istioNamespace: istio-system
+
+  # Logging configuration
+  logging:
+    level: default:info
+
+  # Proxy configuration
+  proxy:
+    # Resource limits
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 2000m
+        memory: 1024Mi
+
+defaultRevision: default

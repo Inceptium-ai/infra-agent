@@ -1,0 +1,129 @@
+# Trivy Operator Helm Values - Security Scanning
+# NIST SI-2: Flaw Remediation (vulnerability scanning)
+
+# Operator configuration
+operator:
+  # Scan all namespaces
+  scanJobsConcurrentLimit: 10
+  scanJobsRetryDelay: 30s
+
+  # Vulnerability scanning
+  vulnerabilityScannerEnabled: true
+  vulnerabilityScannerScanOnlyCurrentRevisions: true
+
+  # Config audit scanning
+  configAuditScannerEnabled: true
+  configAuditScannerScanOnlyCurrentRevisions: true
+
+  # RBAC assessment
+  rbacAssessmentScannerEnabled: true
+
+  # Exposed secrets scanning
+  exposedSecretScannerEnabled: true
+
+  # Infra assessment
+  infraAssessmentScannerEnabled: true
+
+  # Cluster compliance reports
+  clusterComplianceEnabled: true
+
+  # Metrics
+  metricsVulnIdEnabled: true
+  metricsFindingsEnabled: true
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Trivy scanner configuration
+trivy:
+  # Image repository
+  repository: ghcr.io/aquasecurity/trivy
+  tag: 0.58.0
+
+  # Scan mode
+  mode: Standalone
+
+  # Severity filter (only report these severities)
+  severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+
+  # Ignore unfixed vulnerabilities
+  ignoreUnfixed: false
+
+  # Offline mode (use downloaded DB)
+  offlineScan: false
+
+  # Database repository
+  dbRepository: ghcr.io/aquasecurity/trivy-db
+  dbRepositoryInsecure: false
+
+  # Java DB for JAR scanning
+  javaDbRepository: ghcr.io/aquasecurity/trivy-java-db
+
+  # Resource limits for scan jobs
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+    limits:
+      cpu: 500m
+      memory: 500Mi
+
+  # Timeout for scans
+  timeout: 10m
+
+# Compliance configuration
+compliance:
+  # Run compliance reports
+  cron: "0 */6 * * *"  # Every 6 hours
+
+  # Report formats
+  reportFormats:
+    - summary
+    - all
+
+# Service account
+serviceAccount:
+  create: true
+  name: trivy-operator
+  annotations: {}
+
+# RBAC
+rbac:
+  create: true
+
+# Pod security
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10000
+  runAsGroup: 10000
+
+# Tolerations for scanning system components
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+
+# Affinity
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+            - key: kubernetes.io/arch
+              operator: In
+              values:
+                - amd64
+                - arm64
+
+# Monitoring
+serviceMonitor:
+  enabled: true
+  interval: 60s
+  labels:
+    release: prometheus

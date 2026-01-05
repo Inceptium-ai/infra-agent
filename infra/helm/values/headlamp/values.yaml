@@ -1,0 +1,144 @@
+# Headlamp Helm Values - Kubernetes Admin Console
+# OSS Kubernetes Web UI with plugin support
+
+# Replica count
+replicaCount: 2
+
+# Image configuration
+image:
+  registry: ghcr.io
+  repository: headlamp-k8s/headlamp
+  tag: v0.26.0
+  pullPolicy: IfNotPresent
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+
+# Ingress (will use Istio Gateway)
+ingress:
+  enabled: false
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Configuration
+config:
+  # Base URL (will be set based on domain)
+  baseURL: ""
+
+  # Enable in-cluster mode
+  inCluster: true
+
+  # OIDC configuration (optional - for SSO)
+  oidc:
+    enabled: false
+    # clientId: ""
+    # clientSecret: ""
+    # issuerUrl: ""
+    # scopes: ""
+
+  # Plugin configuration
+  plugins:
+    # Enable plugin catalog
+    catalog:
+      enabled: true
+      url: "https://headlamp-k8s.github.io/headlamp/plugins/"
+
+    # Enabled plugins list
+    enabled:
+      - "@headlamp-k8s/pod-metrics"
+      - "@headlamp-k8s/prometheus"
+
+# Persistence for plugins
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: gp3
+  accessModes:
+    - ReadWriteOnce
+
+# Init containers for pre-installed plugins
+initContainers: []
+
+# Service account
+serviceAccount:
+  create: true
+  name: headlamp
+  annotations: {}
+
+# RBAC - cluster-admin for full visibility
+clusterRoleBinding:
+  create: true
+  annotations: {}
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  runAsGroup: 101
+  fsGroup: 101
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+# Pod affinity for HA
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: headlamp
+          topologyKey: kubernetes.io/hostname
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Tolerations
+tolerations: []
+
+# Node selector
+nodeSelector: {}
+
+# Environment variables
+env:
+  - name: HEADLAMP_CONFIG_CLUSTER_NAME
+    value: "infra-agent-dev-cluster"
+
+# Extra volumes for plugins
+extraVolumes: []
+
+# Extra volume mounts
+extraVolumeMounts: []
+
+# Liveness probe
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+# Readiness probe
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5

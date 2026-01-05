@@ -1,0 +1,165 @@
+# Velero Helm Values - Backup and Disaster Recovery
+# NIST CP-9: System Backup, CP-10: System Recovery
+
+# Image configuration
+image:
+  repository: velero/velero
+  tag: v1.15.0
+  pullPolicy: IfNotPresent
+
+# Init containers for plugins
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.11.0
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - name: plugins
+        mountPath: /target
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Backup storage configuration
+configuration:
+  # Default backup storage location
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: ""  # Will be set via --set flag
+      prefix: velero
+      config:
+        region: us-east-1
+        # Cross-region backup location
+    - name: dr
+      provider: aws
+      bucket: ""  # Will be set via --set flag for DR bucket
+      prefix: velero-dr
+      config:
+        region: us-west-2
+
+  # Volume snapshot location
+  volumeSnapshotLocation:
+    - name: default
+      provider: aws
+      config:
+        region: us-east-1
+    - name: dr
+      provider: aws
+      config:
+        region: us-west-2
+
+  # Default volumes to fs-backup
+  defaultVolumesToFsBackup: true
+
+  # Backup sync period
+  backupSyncPeriod: 1m
+
+  # TTL for backups
+  defaultBackupTTL: 720h  # 30 days
+
+  # Restore resource priorities
+  restoreResourcePriorities:
+    - namespaces
+    - storageclasses
+    - persistentvolumes
+    - persistentvolumeclaims
+    - secrets
+    - configmaps
+    - serviceaccounts
+    - limitranges
+    - pods
+
+# Credentials configuration
+credentials:
+  useSecret: true
+  secretContents:
+    cloud: |
+      [default]
+      aws_access_key_id=${AWS_ACCESS_KEY_ID}
+      aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}
+
+# Service account for IRSA
+serviceAccount:
+  server:
+    create: true
+    name: velero
+    annotations: {}
+      # eks.amazonaws.com/role-arn will be added during deployment
+
+# Deploy node-agent for file system backups
+deployNodeAgent: true
+
+nodeAgent:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Tolerate all taints
+  tolerations:
+    - operator: Exists
+
+# Backup schedules
+schedules:
+  # Daily backup of all namespaces
+  daily-backup:
+    disabled: false
+    schedule: "0 2 * * *"  # 2 AM UTC daily
+    template:
+      ttl: 168h  # 7 days
+      includedNamespaces:
+        - "*"
+      excludedNamespaces:
+        - kube-system
+        - velero
+      includeClusterResources: true
+      storageLocation: default
+
+  # Weekly full backup with longer retention
+  weekly-backup:
+    disabled: false
+    schedule: "0 3 * * 0"  # 3 AM UTC every Sunday
+    template:
+      ttl: 720h  # 30 days
+      includedNamespaces:
+        - "*"
+      excludedNamespaces:
+        - kube-system
+      includeClusterResources: true
+      storageLocation: default
+
+  # Cross-region DR backup
+  dr-backup:
+    disabled: false
+    schedule: "0 4 * * *"  # 4 AM UTC daily
+    template:
+      ttl: 336h  # 14 days
+      includedNamespaces:
+        - "*"
+      excludedNamespaces:
+        - kube-system
+        - velero
+      includeClusterResources: true
+      storageLocation: dr
+
+# Metrics
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: prometheus
+
+# RBAC
+rbac:
+  create: true
+  clusterAdministrator: true
