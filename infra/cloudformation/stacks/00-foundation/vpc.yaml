@@ -83,7 +83,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: NIST-Control
           Value: CM-8
 
@@ -110,7 +110,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -138,7 +138,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/elb
           Value: '1'
         - Key: SubnetType
@@ -161,7 +161,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/elb
           Value: '1'
         - Key: SubnetType
@@ -184,7 +184,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/elb
           Value: '1'
         - Key: SubnetType
@@ -210,7 +210,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: SubnetType
           Value: private
 
@@ -231,7 +231,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: SubnetType
           Value: private
 
@@ -252,7 +252,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: SubnetType
           Value: private
 
@@ -277,7 +277,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
         - Key: SubnetType
@@ -301,7 +301,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
         - Key: SubnetType
@@ -325,7 +325,7 @@ Resources:
         - Key: SecurityLevel
           Value: !Ref SecurityLevel
         - Key: IaC_Version
-          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+          Value: '1.0.0'
         - Key: kubernetes.io/role/internal-elb
           Value: '1'
         - Key: SubnetType
@@ -675,7 +675,7 @@ Resources:
         - Key: Owner
           Value: !Ref Owner
         - Key: NIST-Control
-          Value: AU-2,AU-3
+          Value: AU-2_AU-3
 
 Outputs:
   VpcId:

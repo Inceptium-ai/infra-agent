@@ -366,3 +366,408 @@ Deletion order (reverse dependency):
 
 Type 'DELETE DEV' to confirm:
 ```
+
+---
+
+## Agent Orchestration Script
+
+The following Python module enables autonomous infrastructure deployment:
+
+### orchestrator.py
+
+```python
+#!/usr/bin/env python3
+"""
+Infrastructure Build Orchestrator
+Enables AI agent to build infrastructure autonomously
+"""
+
+import boto3
+import time
+import json
+from typing import Dict, Any, Optional
+
+class InfrastructureOrchestrator:
+    """Orchestrates CloudFormation stack deployments"""
+
+    def __init__(self, region: str = 'us-east-1'):
+        self.region = region
+        self.cf = boto3.client('cloudformation', region_name=region)
+        self.eks = boto3.client('eks', region_name=region)
+        self.ssm = boto3.client('ssm', region_name=region)
+        self.logs = boto3.client('logs', region_name=region)
+
+    # =========================================
+    # Step 0: Version Verification
+    # =========================================
+
+    def get_latest_eks_version(self) -> str:
+        """Get latest available EKS version"""
+        response = self.eks.describe_addon_versions()
+        versions = set()
+        for addon in response.get('addons', []):
+            for compat in addon.get('addonVersions', []):
+                for cluster_compat in compat.get('compatibilities', []):
+                    v = cluster_compat.get('clusterVersion')
+                    if v:
+                        versions.add(v)
+        return sorted(versions, reverse=True)[0]
+
+    # =========================================
+    # Stack Deployment Methods
+    # =========================================
+
+    def deploy_stack(
+        self,
+        stack_name: str,
+        template_path: str,
+        parameters: list,
+        capabilities: list = None,
+        wait: bool = True,
+        wait_timeout_minutes: int = 30
+    ) -> Dict[str, Any]:
+        """Deploy a CloudFormation stack"""
+
+        with open(template_path, 'r') as f:
+            template_body = f.read()
+
+        # Check if stack exists
+        try:
+            existing = self.cf.describe_stacks(StackName=stack_name)['Stacks'][0]
+            status = existing['StackStatus']
+
+            if status == 'ROLLBACK_COMPLETE':
+                self._delete_stack(stack_name)
+            elif status in ['CREATE_COMPLETE', 'UPDATE_COMPLETE']:
+                return self._get_stack_outputs(stack_name)
+            elif 'IN_PROGRESS' in status:
+                if wait:
+                    return self._wait_for_stack(stack_name, wait_timeout_minutes)
+                return {'Status': status}
+        except self.cf.exceptions.ClientError as e:
+            if 'does not exist' not in str(e):
+                raise
+
+        # Create stack
+        create_params = {
+            'StackName': stack_name,
+            'TemplateBody': template_body,
+            'Parameters': parameters,
+            'Tags': [
+                {'Key': 'Project', 'Value': 'infra-agent'},
+                {'Key': 'ManagedBy', 'Value': 'InfrastructureOrchestrator'},
+            ]
+        }
+
+        if capabilities:
+            create_params['Capabilities'] = capabilities
+
+        self.cf.create_stack(**create_params)
+
+        if wait:
+            return self._wait_for_stack(stack_name, wait_timeout_minutes)
+
+        return {'Status': 'CREATE_IN_PROGRESS'}
+
+    def _wait_for_stack(self, stack_name: str, timeout_minutes: int) -> Dict[str, Any]:
+        """Wait for stack to complete"""
+        waiter = self.cf.get_waiter('stack_create_complete')
+        waiter.wait(
+            StackName=stack_name,
+            WaiterConfig={'Delay': 30, 'MaxAttempts': timeout_minutes * 2}
+        )
+        return self._get_stack_outputs(stack_name)
+
+    def _get_stack_outputs(self, stack_name: str) -> Dict[str, Any]:
+        """Get stack outputs as dictionary"""
+        stack = self.cf.describe_stacks(StackName=stack_name)['Stacks'][0]
+        return {o['OutputKey']: o['OutputValue'] for o in stack.get('Outputs', [])}
+
+    def _delete_stack(self, stack_name: str):
+        """Delete a stack"""
+        self.cf.delete_stack(StackName=stack_name)
+        waiter = self.cf.get_waiter('stack_delete_complete')
+        waiter.wait(StackName=stack_name)
+
+    # =========================================
+    # Phase 1: Foundation
+    # =========================================
+
+    def deploy_iam_roles(self, env: str = 'dev') -> Dict[str, Any]:
+        """Deploy IAM Roles stack"""
+        return self.deploy_stack(
+            stack_name=f'infra-agent-{env}-iam-roles',
+            template_path='infra/cloudformation/stacks/00-foundation/iam-roles.yaml',
+            parameters=[
+                {'ParameterKey': 'ProjectName', 'ParameterValue': 'infra-agent'},
+                {'ParameterKey': 'Environment', 'ParameterValue': env},
+                {'ParameterKey': 'Owner', 'ParameterValue': 'platform-team'},
+            ],
+            capabilities=['CAPABILITY_NAMED_IAM'],
+            wait_timeout_minutes=5
+        )
+
+    def deploy_vpc(self, env: str = 'dev') -> Dict[str, Any]:
+        """Deploy VPC stack"""
+        return self.deploy_stack(
+            stack_name=f'infra-agent-{env}-vpc',
+            template_path='infra/cloudformation/stacks/00-foundation/vpc.yaml',
+            parameters=[
+                {'ParameterKey': 'ProjectName', 'ParameterValue': 'infra-agent'},
+                {'ParameterKey': 'Environment', 'ParameterValue': env},
+                {'ParameterKey': 'Owner', 'ParameterValue': 'platform-team'},
+                {'ParameterKey': 'SecurityLevel', 'ParameterValue': 'Internal'},
+            ],
+            capabilities=['CAPABILITY_NAMED_IAM'],
+            wait_timeout_minutes=10
+        )
+
+    def deploy_security_groups(self, env: str, vpc_outputs: Dict) -> Dict[str, Any]:
+        """Deploy Security Groups stack"""
+        return self.deploy_stack(
+            stack_name=f'infra-agent-{env}-security-groups',
+            template_path='infra/cloudformation/stacks/00-foundation/security-groups.yaml',
+            parameters=[
+                {'ParameterKey': 'ProjectName', 'ParameterValue': 'infra-agent'},
+                {'ParameterKey': 'Environment', 'ParameterValue': env},
+                {'ParameterKey': 'VpcId', 'ParameterValue': vpc_outputs['VpcId']},
+                {'ParameterKey': 'AllowedCidrBlocks', 'ParameterValue': '10.0.0.0/8'},
+                {'ParameterKey': 'Owner', 'ParameterValue': 'platform-team'},
+            ],
+            wait_timeout_minutes=5
+        )
+
+    def deploy_bastion(
+        self,
+        env: str,
+        vpc_outputs: Dict,
+        sg_outputs: Dict,
+        iam_outputs: Dict
+    ) -> Dict[str, Any]:
+        """Deploy Bastion Host stack"""
+        private_subnets = vpc_outputs['PrivateSubnetIds'].split(',')
+
+        return self.deploy_stack(
+            stack_name=f'infra-agent-{env}-bastion',
+            template_path='infra/cloudformation/stacks/00-foundation/bastion.yaml',
+            parameters=[
+                {'ParameterKey': 'ProjectName', 'ParameterValue': 'infra-agent'},
+                {'ParameterKey': 'Environment', 'ParameterValue': env},
+                {'ParameterKey': 'PrivateSubnetId', 'ParameterValue': private_subnets[0]},
+                {'ParameterKey': 'BastionSecurityGroupId', 'ParameterValue': sg_outputs['BastionSecurityGroupId']},
+                {'ParameterKey': 'BastionInstanceProfileArn', 'ParameterValue': iam_outputs['BastionInstanceProfileArn']},
+                {'ParameterKey': 'InstanceType', 'ParameterValue': 't3a.medium'},
+                {'ParameterKey': 'Owner', 'ParameterValue': 'platform-team'},
+            ],
+            wait_timeout_minutes=5
+        )
+
+    # =========================================
+    # Network Testing
+    # =========================================
+
+    def test_network_connectivity(self, instance_id: str) -> Dict[str, bool]:
+        """Run network connectivity tests on bastion"""
+        commands = [
+            'nslookup google.com > /dev/null 2>&1 && echo "DNS:PASS" || echo "DNS:FAIL"',
+            'curl -s --connect-timeout 5 https://google.com > /dev/null && echo "INTERNET:PASS" || echo "INTERNET:FAIL"',
+            'aws sts get-caller-identity > /dev/null 2>&1 && echo "AWS_API:PASS" || echo "AWS_API:FAIL"',
+            'curl -s --connect-timeout 5 https://public.ecr.aws/v2/ > /dev/null && echo "ECR:PASS" || echo "ECR:FAIL"',
+            'curl -s --connect-timeout 5 https://registry-1.docker.io/v2/ > /dev/null && echo "DOCKER:PASS" || echo "DOCKER:FAIL"',
+        ]
+
+        response = self.ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName='AWS-RunShellScript',
+            Parameters={'commands': commands},
+            TimeoutSeconds=60
+        )
+
+        command_id = response['Command']['CommandId']
+        time.sleep(15)
+
+        output = self.ssm.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=instance_id
+        )
+
+        results = {}
+        for line in output['StandardOutputContent'].split('\n'):
+            if ':' in line:
+                key, value = line.strip().split(':')
+                results[key] = value == 'PASS'
+
+        return results
+
+    # =========================================
+    # Phase 2: EKS Cluster
+    # =========================================
+
+    def deploy_eks_cluster(
+        self,
+        env: str,
+        vpc_outputs: Dict,
+        sg_outputs: Dict,
+        iam_outputs: Dict,
+        eks_version: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Deploy EKS Cluster stack"""
+
+        if eks_version is None:
+            eks_version = self.get_latest_eks_version()
+
+        private_subnets = vpc_outputs['PrivateSubnetIds'].split(',')
+
+        # Clean up any orphaned log group from previous failed deployment
+        log_group_name = f'/aws/eks/infra-agent-{env}-cluster/cluster'
+        try:
+            self.logs.delete_log_group(logGroupName=log_group_name)
+        except self.logs.exceptions.ResourceNotFoundException:
+            pass
+
+        return self.deploy_stack(
+            stack_name=f'infra-agent-{env}-eks-cluster',
+            template_path='infra/cloudformation/stacks/03-eks/cluster.yaml',
+            parameters=[
+                {'ParameterKey': 'ProjectName', 'ParameterValue': 'infra-agent'},
+                {'ParameterKey': 'Environment', 'ParameterValue': env},
+                {'ParameterKey': 'KubernetesVersion', 'ParameterValue': eks_version},
+                {'ParameterKey': 'VpcId', 'ParameterValue': vpc_outputs['VpcId']},
+                {'ParameterKey': 'PrivateSubnet1Id', 'ParameterValue': private_subnets[0]},
+                {'ParameterKey': 'PrivateSubnet2Id', 'ParameterValue': private_subnets[1]},
+                {'ParameterKey': 'PrivateSubnet3Id', 'ParameterValue': private_subnets[2]},
+                {'ParameterKey': 'EksClusterSecurityGroupId', 'ParameterValue': sg_outputs['EksClusterSecurityGroupId']},
+                {'ParameterKey': 'EksClusterRoleArn', 'ParameterValue': iam_outputs['EksClusterRoleArn']},
+                {'ParameterKey': 'Owner', 'ParameterValue': 'platform-team'},
+                {'ParameterKey': 'EnablePublicEndpoint', 'ParameterValue': 'false'},
+            ],
+            capabilities=['CAPABILITY_NAMED_IAM'],
+            wait_timeout_minutes=30  # EKS takes 15-20 minutes
+        )
+
+    # =========================================
+    # Full Orchestration
+    # =========================================
+
+    def build_infrastructure(self, env: str = 'dev') -> Dict[str, Dict]:
+        """
+        Build complete infrastructure stack
+
+        This is the main entry point for autonomous infrastructure deployment.
+        """
+        results = {}
+
+        # Step 0: Get latest versions
+        eks_version = self.get_latest_eks_version()
+        print(f"[INFO] Using EKS version: {eks_version}")
+
+        # Phase 1: Foundation
+        print("\n[PHASE 1] Deploying Foundation Infrastructure...")
+
+        print("[1/4] Deploying IAM Roles...")
+        results['iam'] = self.deploy_iam_roles(env)
+        print(f"      ✓ IAM Roles: {results['iam'].get('EksClusterRoleArn', 'N/A')}")
+
+        print("[2/4] Deploying VPC...")
+        results['vpc'] = self.deploy_vpc(env)
+        print(f"      ✓ VPC: {results['vpc'].get('VpcId', 'N/A')}")
+
+        print("[3/4] Deploying Security Groups...")
+        results['security_groups'] = self.deploy_security_groups(env, results['vpc'])
+        print(f"      ✓ Security Groups: {results['security_groups'].get('EksClusterSecurityGroupId', 'N/A')}")
+
+        print("[4/4] Deploying Bastion Host...")
+        results['bastion'] = self.deploy_bastion(
+            env, results['vpc'], results['security_groups'], results['iam']
+        )
+        print(f"      ✓ Bastion: {results['bastion'].get('BastionInstanceId', 'N/A')}")
+
+        # Network testing
+        print("\n[VALIDATION] Testing network connectivity...")
+        time.sleep(60)  # Wait for bastion to initialize
+
+        network_tests = self.test_network_connectivity(results['bastion']['BastionInstanceId'])
+        all_passed = all(network_tests.values())
+        for test, passed in network_tests.items():
+            status = '✓' if passed else '✗'
+            print(f"      {status} {test}")
+
+        if not all_passed:
+            raise Exception("Network tests failed - check VPC configuration")
+
+        # Phase 2: EKS
+        print("\n[PHASE 2] Deploying EKS Cluster...")
+        results['eks'] = self.deploy_eks_cluster(
+            env, results['vpc'], results['security_groups'], results['iam'], eks_version
+        )
+        print(f"      ✓ EKS Cluster: {results['eks'].get('ClusterName', 'N/A')}")
+        print(f"      ✓ Endpoint: {results['eks'].get('ClusterEndpoint', 'N/A')}")
+
+        # Phase 3: Node Groups (TODO)
+        # Phase 4: Add-ons (TODO)
+        # Phase 5: Helm Charts (TODO)
+
+        return results
+
+
+# Main execution
+if __name__ == '__main__':
+    orchestrator = InfrastructureOrchestrator(region='us-east-1')
+    outputs = orchestrator.build_infrastructure('dev')
+
+    print("\n" + "=" * 60)
+    print("DEPLOYMENT COMPLETE")
+    print("=" * 60)
+    print(json.dumps(outputs, indent=2, default=str))
+```
+
+---
+
+## Agent Training Instructions
+
+When training the AI agent to use this workflow:
+
+### Key Principles
+
+1. **Always verify versions first** - Never hardcode versions without checking latest stable
+2. **Follow dependency order** - IAM → VPC → Security Groups → Bastion → EKS
+3. **Test before proceeding** - Run network tests before EKS deployment
+4. **Handle errors gracefully** - Clean up failed stacks before retry
+5. **Use IaC exclusively** - All resources via CloudFormation templates
+
+### Error Recovery Patterns
+
+| Error Type | Detection | Resolution |
+|------------|-----------|------------|
+| ROLLBACK_COMPLETE | Stack status check | Delete stack, fix issue, retry |
+| Resource exists | "already exists" in error | Delete orphaned resource |
+| IAM permission | "not authorized" | Check IAM role permissions |
+| Export conflict | "already exported" | Rename export in template |
+| Version mismatch | API version check | Update template to latest |
+
+### Decision Points
+
+The agent should ask for confirmation at these points:
+
+1. Before first deployment to a new environment
+2. Before deploying EKS (expensive, long-running)
+3. Before any PRD environment changes
+4. When network tests fail
+
+### Monitoring Progress
+
+The agent should report status using this format:
+
+```
+[PHASE N] Phase description
+[step/total] Action description...
+      ✓ Resource: identifier
+      ✗ Error: description
+```
+
+### Idempotency
+
+All operations should be idempotent:
+- Check if stack exists before creating
+- Skip completed steps on retry
+- Clean up partial failures before retry

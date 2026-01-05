@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Bastion Host for Network Testing and Administration
+  Access via AWS Systems Manager Session Manager (no SSH port exposed)
+  NIST 800-53 R5 Controls: AC-6 (Least Privilege), SC-7 (Boundary Protection)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  PrivateSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet for bastion host
+
+  BastionSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for bastion host
+
+  BastionInstanceProfileArn:
+    Type: String
+    Description: ARN of the bastion instance profile
+
+  InstanceType:
+    Type: String
+    Default: t3a.medium
+    AllowedValues:
+      - t3a.micro
+      - t3a.small
+      - t3a.medium
+    Description: EC2 instance type for bastion
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+Resources:
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      # Use SSM parameter for always-current Amazon Linux 2023 AMI
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetId
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroupId
+      IamInstanceProfile: !Select [1, !Split ['/', !Ref BastionInstanceProfileArn]]
+      # No public IP - access via SSM Session Manager only
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          # Update system
+          dnf update -y
+
+          # Install useful tools for network testing
+          dnf install -y \
+            bind-utils \
+            net-tools \
+            tcpdump \
+            traceroute \
+            telnet \
+            nmap-ncat \
+            jq \
+            curl \
+            wget \
+            htop \
+            vim
+
+          # Install AWS CLI v2
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          ./aws/install
+          rm -rf aws awscliv2.zip
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+
+          # Install helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+          # Create network test script
+          cat > /home/ec2-user/test-network.sh << 'SCRIPT'
+          #!/bin/bash
+          echo "=== Network Connectivity Tests ==="
+          echo ""
+
+          echo "1. Testing DNS resolution..."
+          nslookup google.com && echo "  DNS: OK" || echo "  DNS: FAILED"
+          echo ""
+
+          echo "2. Testing internet connectivity (via NAT Gateway)..."
+          curl -s --connect-timeout 5 https://www.google.com > /dev/null && echo "  Internet: OK" || echo "  Internet: FAILED"
+          echo ""
+
+          echo "3. Testing AWS API connectivity..."
+          aws sts get-caller-identity > /dev/null 2>&1 && echo "  AWS API: OK" || echo "  AWS API: FAILED"
+          echo ""
+
+          echo "4. Testing container registry access..."
+          curl -s --connect-timeout 5 https://public.ecr.aws/v2/ > /dev/null && echo "  ECR Public: OK" || echo "  ECR Public: FAILED"
+          curl -s --connect-timeout 5 https://registry-1.docker.io/v2/ > /dev/null && echo "  Docker Hub: OK" || echo "  Docker Hub: FAILED"
+          curl -s --connect-timeout 5 https://ghcr.io/v2/ > /dev/null && echo "  GHCR: OK" || echo "  GHCR: FAILED"
+          echo ""
+
+          echo "5. Testing VPC CIDR ranges..."
+          echo "  Primary VPC CIDR: 10.0.0.0/16"
+          echo "  Pod CIDR: 100.64.0.0/16"
+          ip route
+          echo ""
+
+          echo "6. Local network info..."
+          echo "  Hostname: $(hostname)"
+          echo "  Private IP: $(hostname -I | awk '{print $1}')"
+          echo "  Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo 'N/A')"
+          echo ""
+
+          echo "=== Tests Complete ==="
+          SCRIPT
+          chmod +x /home/ec2-user/test-network.sh
+          chown ec2-user:ec2-user /home/ec2-user/test-network.sh
+
+          # Signal completion
+          echo "Bastion setup complete" > /tmp/bastion-setup-complete
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-6_SC-7
+
+Outputs:
+  BastionInstanceId:
+    Description: Instance ID of the bastion host
+    Value: !Ref BastionHost
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-bastion-instance-id'
+
+  BastionPrivateIp:
+    Description: Private IP address of bastion host
+    Value: !GetAtt BastionHost.PrivateIp
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-bastion-private-ip'
+
+  SSMConnectCommand:
+    Description: Command to connect to bastion via SSM
+    Value: !Sub 'aws ssm start-session --target ${BastionHost} --region ${AWS::Region}'

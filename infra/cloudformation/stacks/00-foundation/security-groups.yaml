@@ -94,7 +94,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,SC-8
+          Value: SC-7_SC-8
 
   #############################################
   # Bastion Security Group - Restricted SSH
@@ -132,7 +132,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,AC-6
+          Value: SC-7_AC-6
 
   #############################################
   # EKS Cluster Security Group - Control Plane
@@ -167,7 +167,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,AC-6
+          Value: SC-7_AC-6
 
   # Self-reference rule for cluster-to-node communication
   EksClusterSelfIngress:
@@ -228,7 +228,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,AC-6
+          Value: SC-7_AC-6
 
   # Node-to-node communication
   EksNodesSelfIngress:
@@ -289,7 +289,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,AC-6
+          Value: SC-7_AC-6
 
   #############################################
   # VPC Endpoints Security Group
@@ -372,7 +372,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: SC-7,SC-8
+          Value: SC-7_SC-8
 
 Outputs:
   AlbSecurityGroupId:

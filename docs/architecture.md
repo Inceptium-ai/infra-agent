@@ -75,7 +75,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 ### AWS Services
 | Service | Purpose | Version/Config |
 |---------|---------|----------------|
-| Amazon EKS | Kubernetes control plane | 1.32+ |
+| Amazon EKS | Kubernetes control plane | 1.34 |
 | EC2 | Worker nodes, bastion | t3a.medium (bastion), m5.large (nodes) |
 | VPC | Networking | Primary + Secondary CIDR |
 | ALB | Load balancing | Via AWS Load Balancer Controller |
@@ -335,7 +335,7 @@ Phase 1: Foundation              Phase 2: EKS                Phase 3: Services
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| EKS | 1.32+ | Latest standard support |
+| EKS | 1.34 | Latest standard support |
 | Istio | 1.24+ | mTLS enabled |
 | Loki | 3.x | Scalable mode |
 | Grafana | 11.x | Unified observability |

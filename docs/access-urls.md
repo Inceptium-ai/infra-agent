@@ -263,7 +263,7 @@ You: Show me the cluster status
 Agent: Here's the current cluster status:
 
 Cluster: infra-agent-dev-cluster
-Version: 1.32
+Version: 1.34
 Status: ACTIVE
 Nodes: 3/3 Ready
 Pods: 47/50 Running

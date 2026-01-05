@@ -251,7 +251,7 @@ def get_stack_status(stack_name: str) -> dict:
 ```yaml
 # Key settings
 EKSCluster:
-  Version: "1.32"
+  Version: "1.34"
   EndpointPrivateAccess: true
   EndpointPublicAccess: false  # Zero Trust
   EncryptionConfig:

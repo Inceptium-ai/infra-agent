@@ -71,7 +71,7 @@ class Settings(BaseSettings):
 
     # EKS Configuration
     eks_cluster_name: Optional[str] = Field(default=None, description="EKS cluster name")
-    eks_cluster_version: str = Field(default="1.32", description="EKS Kubernetes version")
+    eks_cluster_version: str = Field(default="1.34", description="EKS Kubernetes version")
 
     # Database Configuration
     database_host: Optional[str] = Field(default=None, description="RDS database host")

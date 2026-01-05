@@ -82,7 +82,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AC-2,AC-6
+          Value: AC-2_AC-6
 
   #############################################
   # EKS Node Group IAM Role
@@ -116,7 +116,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AC-2,AC-6
+          Value: AC-2_AC-6
 
   # Instance Profile for EKS Nodes
   EksNodeGroupInstanceProfile:
@@ -171,7 +171,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AC-2,AC-6
+          Value: AC-2_AC-6
 
   # Instance Profile for Bastion
   BastionInstanceProfile:
@@ -223,7 +223,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AU-2,AC-6
+          Value: AU-2_AC-6
 
   #############################################
   # AWS Load Balancer Controller IAM Role

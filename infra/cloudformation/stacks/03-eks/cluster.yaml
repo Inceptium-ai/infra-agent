@@ -20,12 +20,13 @@ Parameters:
 
   KubernetesVersion:
     Type: String
-    Default: '1.32'
+    Default: '1.34'
     AllowedValues:
+      - '1.34'
+      - '1.33'
       - '1.32'
       - '1.31'
-      - '1.30'
-    Description: Kubernetes version for EKS cluster
+    Description: Kubernetes version for EKS cluster (1.34 is latest as of Jan 2025)
 
   VpcId:
     Type: AWS::EC2::VPC::Id
@@ -155,6 +156,7 @@ Resources:
   #############################################
   EksCluster:
     Type: AWS::EKS::Cluster
+    DependsOn: EksLogGroup  # Log group must exist before EKS creates it
     Properties:
       Name: !Sub '${ProjectName}-${Environment}-cluster'
       Version: !Ref KubernetesVersion
@@ -197,7 +199,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AU-2,SC-28
+          Value: AU-2_SC-28
 
   #############################################
   # OIDC Provider for IRSA
@@ -241,7 +243,7 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: AU-2,AU-11
+          Value: AU-2_AU-11
 
 Outputs:
   ClusterName:
@@ -266,7 +268,7 @@ Outputs:
     Description: Security group ID created by EKS
     Value: !GetAtt EksCluster.ClusterSecurityGroupId
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-sg-id'
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-created-sg-id'
 
   OidcProviderArn:
     Description: ARN of the OIDC provider for IRSA
@@ -281,10 +283,9 @@ Outputs:
       Name: !Sub '${ProjectName}-${Environment}-oidc-provider-url'
 
   CertificateAuthorityData:
-    Description: Certificate authority data for the cluster
+    Description: Certificate authority data for the cluster (not exported due to length limit)
     Value: !GetAtt EksCluster.CertificateAuthorityData
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-eks-ca-data'
+    # Note: Cannot export - exceeds CloudFormation 1024 char limit
 
   KmsKeyArn:
     Description: ARN of the KMS key used for secrets encryption
