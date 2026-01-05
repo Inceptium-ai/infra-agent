@@ -1,0 +1,305 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EKS Cluster for Infrastructure Agent
+  NIST 800-53 R5 Controls: SC-28 (Encryption at Rest), AU-2 (Audit Events), AC-6 (Least Privilege)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  KubernetesVersion:
+    Type: String
+    Default: '1.32'
+    AllowedValues:
+      - '1.32'
+      - '1.31'
+      - '1.30'
+    Description: Kubernetes version for EKS cluster
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where EKS cluster will be deployed
+
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 1 for EKS control plane
+
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 2 for EKS control plane
+
+  PrivateSubnet3Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet 3 for EKS control plane
+
+  EksClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for EKS cluster control plane
+
+  EksClusterRoleArn:
+    Type: String
+    Description: ARN of the EKS cluster IAM role
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team or individual responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+  EnablePublicEndpoint:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable public API endpoint (not recommended for production)
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, 'prd']
+  EnablePublicAccess: !Equals [!Ref EnablePublicEndpoint, 'true']
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: EKS Configuration
+        Parameters:
+          - KubernetesVersion
+          - EnablePublicEndpoint
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - VpcId
+          - PrivateSubnet1Id
+          - PrivateSubnet2Id
+          - PrivateSubnet3Id
+          - EksClusterSecurityGroupId
+      - Label:
+          default: IAM Configuration
+        Parameters:
+          - EksClusterRoleArn
+
+Resources:
+  #############################################
+  # KMS Key for EKS Secrets Encryption (SC-28)
+  #############################################
+  EksSecretsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'KMS key for EKS secrets encryption - ${ProjectName}-${Environment}'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow EKS to use the key
+            Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-secrets-key'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: restricted
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-28
+
+  EksSecretsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectName}-${Environment}-eks-secrets'
+      TargetKeyId: !Ref EksSecretsKey
+
+  #############################################
+  # EKS Cluster
+  #############################################
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-cluster'
+      Version: !Ref KubernetesVersion
+      RoleArn: !Ref EksClusterRoleArn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref EksClusterSecurityGroupId
+        SubnetIds:
+          - !Ref PrivateSubnet1Id
+          - !Ref PrivateSubnet2Id
+          - !Ref PrivateSubnet3Id
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: !If [EnablePublicAccess, true, false]
+        PublicAccessCidrs: !If
+          - EnablePublicAccess
+          - ['0.0.0.0/0']
+          - !Ref AWS::NoValue
+      EncryptionConfig:
+        - Provider:
+            KeyArn: !GetAtt EksSecretsKey.Arn
+          Resources:
+            - secrets
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-cluster'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: restricted
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AU-2,SC-28
+
+  #############################################
+  # OIDC Provider for IRSA
+  #############################################
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        # AWS EKS OIDC thumbprint (may need updating)
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+      Url: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-oidc-provider'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: restricted
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
+  #############################################
+  # CloudWatch Log Group for EKS Logs
+  #############################################
+  EksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/eks/${ProjectName}-${Environment}-cluster/cluster'
+      RetentionInDays: !If [IsProduction, 365, 90]
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AU-2,AU-11
+
+Outputs:
+  ClusterName:
+    Description: Name of the EKS cluster
+    Value: !Ref EksCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-name'
+
+  ClusterArn:
+    Description: ARN of the EKS cluster
+    Value: !GetAtt EksCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-arn'
+
+  ClusterEndpoint:
+    Description: Endpoint URL for the EKS cluster API
+    Value: !GetAtt EksCluster.Endpoint
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-endpoint'
+
+  ClusterSecurityGroupId:
+    Description: Security group ID created by EKS
+    Value: !GetAtt EksCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-sg-id'
+
+  OidcProviderArn:
+    Description: ARN of the OIDC provider for IRSA
+    Value: !GetAtt OidcProvider.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-oidc-provider-arn'
+
+  OidcProviderUrl:
+    Description: URL of the OIDC provider (without https://)
+    Value: !Select [1, !Split ['https://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-oidc-provider-url'
+
+  CertificateAuthorityData:
+    Description: Certificate authority data for the cluster
+    Value: !GetAtt EksCluster.CertificateAuthorityData
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-ca-data'
+
+  KmsKeyArn:
+    Description: ARN of the KMS key used for secrets encryption
+    Value: !GetAtt EksSecretsKey.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-kms-key-arn'
+
+  EksLogGroupArn:
+    Description: ARN of the CloudWatch Log Group for EKS logs
+    Value: !GetAtt EksLogGroup.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-log-group-arn'
+
+  KubernetesVersion:
+    Description: Kubernetes version of the cluster
+    Value: !Ref KubernetesVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-k8s-version'

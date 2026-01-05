@@ -1,0 +1,342 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EKS Add-ons for Infrastructure Agent
+  Includes: VPC CNI, CoreDNS, kube-proxy, EBS CSI Driver, AWS Load Balancer Controller
+  NIST 800-53 R5 Controls: AC-6 (Least Privilege via IRSA)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  ClusterName:
+    Type: String
+    Description: Name of the EKS cluster
+
+  OidcProviderArn:
+    Type: String
+    Description: ARN of the OIDC provider for IRSA
+
+  OidcProviderUrl:
+    Type: String
+    Description: URL of the OIDC provider (without https://)
+
+  VpcCniPolicyArn:
+    Type: String
+    Description: ARN of the VPC CNI IAM policy
+
+  EbsCsiDriverPolicyArn:
+    Type: String
+    Description: ARN of the EBS CSI Driver IAM policy
+
+  AwsLbControllerPolicyArn:
+    Type: String
+    Description: ARN of the AWS Load Balancer Controller IAM policy
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team or individual responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+  # Add-on Versions (update as needed)
+  VpcCniVersion:
+    Type: String
+    Default: v1.19.0-eksbuild.1
+    Description: Version of the VPC CNI add-on
+
+  CoreDnsVersion:
+    Type: String
+    Default: v1.11.4-eksbuild.2
+    Description: Version of the CoreDNS add-on
+
+  KubeProxyVersion:
+    Type: String
+    Default: v1.32.0-eksbuild.2
+    Description: Version of the kube-proxy add-on
+
+  EbsCsiVersion:
+    Type: String
+    Default: v1.37.0-eksbuild.1
+    Description: Version of the EBS CSI Driver add-on
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: EKS Configuration
+        Parameters:
+          - ClusterName
+          - OidcProviderArn
+          - OidcProviderUrl
+      - Label:
+          default: IAM Policies
+        Parameters:
+          - VpcCniPolicyArn
+          - EbsCsiDriverPolicyArn
+          - AwsLbControllerPolicyArn
+      - Label:
+          default: Add-on Versions
+        Parameters:
+          - VpcCniVersion
+          - CoreDnsVersion
+          - KubeProxyVersion
+          - EbsCsiVersion
+
+Resources:
+  #############################################
+  # IRSA Role for VPC CNI
+  #############################################
+  VpcCniRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-vpc-cni-role'
+      Description: IAM role for VPC CNI (IRSA)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:aws-node'
+                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+      ManagedPolicyArns:
+        - !Ref VpcCniPolicyArn
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpc-cni-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-6
+
+  #############################################
+  # IRSA Role for EBS CSI Driver
+  #############################################
+  EbsCsiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ebs-csi-role'
+      Description: IAM role for EBS CSI Driver (IRSA)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:ebs-csi-controller-sa'
+                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+      ManagedPolicyArns:
+        - !Ref EbsCsiDriverPolicyArn
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ebs-csi-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-6
+
+  #############################################
+  # IRSA Role for AWS Load Balancer Controller
+  #############################################
+  AwsLbControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role'
+      Description: IAM role for AWS Load Balancer Controller (IRSA)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub '${OidcProviderUrl}:sub': 'system:serviceaccount:kube-system:aws-load-balancer-controller'
+                !Sub '${OidcProviderUrl}:aud': 'sts.amazonaws.com'
+      ManagedPolicyArns:
+        - !Ref AwsLbControllerPolicyArn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-6
+
+  #############################################
+  # VPC CNI Add-on
+  #############################################
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: vpc-cni
+      AddonVersion: !Ref VpcCniVersion
+      ClusterName: !Ref ClusterName
+      ServiceAccountRoleArn: !GetAtt VpcCniRole.Arn
+      ResolveConflicts: OVERWRITE
+      ConfigurationValues: !Sub |
+        {
+          "env": {
+            "ENABLE_PREFIX_DELEGATION": "true",
+            "WARM_PREFIX_TARGET": "1",
+            "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
+            "ENI_CONFIG_LABEL_DEF": "topology.kubernetes.io/zone"
+          }
+        }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
+  #############################################
+  # CoreDNS Add-on
+  #############################################
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: VpcCniAddon
+    Properties:
+      AddonName: coredns
+      AddonVersion: !Ref CoreDnsVersion
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
+  #############################################
+  # kube-proxy Add-on
+  #############################################
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: VpcCniAddon
+    Properties:
+      AddonName: kube-proxy
+      AddonVersion: !Ref KubeProxyVersion
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
+  #############################################
+  # EBS CSI Driver Add-on
+  #############################################
+  EbsCsiAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: VpcCniAddon
+    Properties:
+      AddonName: aws-ebs-csi-driver
+      AddonVersion: !Ref EbsCsiVersion
+      ClusterName: !Ref ClusterName
+      ServiceAccountRoleArn: !GetAtt EbsCsiRole.Arn
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
+Outputs:
+  VpcCniRoleArn:
+    Description: ARN of the VPC CNI IAM role
+    Value: !GetAtt VpcCniRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-vpc-cni-role-arn'
+
+  EbsCsiRoleArn:
+    Description: ARN of the EBS CSI Driver IAM role
+    Value: !GetAtt EbsCsiRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ebs-csi-role-arn'
+
+  AwsLbControllerRoleArn:
+    Description: ARN of the AWS Load Balancer Controller IAM role
+    Value: !GetAtt AwsLbControllerRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role-arn'
+
+  VpcCniAddonVersion:
+    Description: Version of the VPC CNI add-on
+    Value: !Ref VpcCniVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-vpc-cni-version'
+
+  CoreDnsAddonVersion:
+    Description: Version of the CoreDNS add-on
+    Value: !Ref CoreDnsVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-coredns-version'
+
+  KubeProxyAddonVersion:
+    Description: Version of the kube-proxy add-on
+    Value: !Ref KubeProxyVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-kube-proxy-version'
+
+  EbsCsiAddonVersion:
+    Description: Version of the EBS CSI Driver add-on
+    Value: !Ref EbsCsiVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ebs-csi-version'

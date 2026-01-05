@@ -1,0 +1,254 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EKS Managed Node Groups for Infrastructure Agent
+  NIST 800-53 R5 Controls: SC-7 (Boundary Protection), AC-6 (Least Privilege)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  ClusterName:
+    Type: String
+    Description: Name of the EKS cluster
+
+  NodeGroupRoleArn:
+    Type: String
+    Description: ARN of the EKS node group IAM role
+
+  PodSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Pod subnet 1 (100.64.x.x) for worker nodes
+
+  PodSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Pod subnet 2 (100.64.x.x) for worker nodes
+
+  PodSubnet3Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Pod subnet 3 (100.64.x.x) for worker nodes
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team or individual responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+  # Node Group Sizing
+  GeneralNodeInstanceTypes:
+    Type: CommaDelimitedList
+    Default: 't3.large,t3a.large,m5.large,m5a.large'
+    Description: Instance types for general purpose nodes
+
+  GeneralNodeMinSize:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 100
+    Description: Minimum number of general nodes
+
+  GeneralNodeMaxSize:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: Maximum number of general nodes
+
+  GeneralNodeDesiredSize:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 100
+    Description: Desired number of general nodes
+
+  # Disk Configuration
+  NodeDiskSize:
+    Type: Number
+    Default: 100
+    MinValue: 20
+    MaxValue: 500
+    Description: Disk size in GB for worker nodes
+
+  # AMI Type - AWS EKS Optimized AMIs (Istio Compatible)
+  # All AWS EKS-optimized AMIs support Istio service mesh:
+  # - Modern Linux kernels with iptables/nftables support
+  # - Container-optimized with required kernel modules
+  # - AL2023 recommended for best Istio compatibility (kernel 6.x)
+  AmiType:
+    Type: String
+    Default: AL2023_x86_64_STANDARD
+    AllowedValues:
+      - AL2023_x86_64_STANDARD      # Amazon EKS optimized AL2023 - RECOMMENDED for Istio (kernel 6.x)
+      - AL2023_ARM_64_STANDARD      # Amazon EKS optimized AL2023 ARM/Graviton - Istio compatible
+      - AL2_x86_64                  # Amazon EKS optimized AL2 - Istio compatible (kernel 5.x)
+      - AL2_x86_64_GPU              # Amazon EKS optimized AL2 GPU - Istio compatible
+      - AL2_ARM_64                  # Amazon EKS optimized AL2 ARM/Graviton - Istio compatible
+      - BOTTLEROCKET_x86_64         # Amazon EKS optimized Bottlerocket - Istio compatible (requires CNI config)
+      - BOTTLEROCKET_ARM_64         # Amazon EKS optimized Bottlerocket ARM - Istio compatible
+    Description: AWS EKS Optimized AMI (AL2023 recommended for Istio service mesh)
+
+  # Capacity Type
+  CapacityType:
+    Type: String
+    Default: ON_DEMAND
+    AllowedValues:
+      - ON_DEMAND
+      - SPOT
+    Description: Capacity type for worker nodes
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, 'prd']
+  UseSpot: !Equals [!Ref CapacityType, 'SPOT']
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: EKS Configuration
+        Parameters:
+          - ClusterName
+          - NodeGroupRoleArn
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - PodSubnet1Id
+          - PodSubnet2Id
+          - PodSubnet3Id
+      - Label:
+          default: Node Group Sizing
+        Parameters:
+          - GeneralNodeInstanceTypes
+          - GeneralNodeMinSize
+          - GeneralNodeMaxSize
+          - GeneralNodeDesiredSize
+      - Label:
+          default: Node Configuration
+        Parameters:
+          - NodeDiskSize
+          - AmiType
+          - CapacityType
+
+Resources:
+  #############################################
+  # General Purpose Node Group
+  #############################################
+  GeneralNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      NodegroupName: !Sub '${ProjectName}-${Environment}-general-nodes'
+      ClusterName: !Ref ClusterName
+      NodeRole: !Ref NodeGroupRoleArn
+      Subnets:
+        - !Ref PodSubnet1Id
+        - !Ref PodSubnet2Id
+        - !Ref PodSubnet3Id
+      ScalingConfig:
+        MinSize: !Ref GeneralNodeMinSize
+        MaxSize: !Ref GeneralNodeMaxSize
+        DesiredSize: !Ref GeneralNodeDesiredSize
+      InstanceTypes: !Ref GeneralNodeInstanceTypes
+      AmiType: !Ref AmiType
+      CapacityType: !Ref CapacityType
+      DiskSize: !Ref NodeDiskSize
+      Labels:
+        role: general
+        environment: !Ref Environment
+        project: !Ref ProjectName
+      Tags:
+        Environment: !Ref Environment
+        Owner: !Ref Owner
+        SecurityLevel: internal
+        IaC_Version: !Ref IaCVersion
+        NIST_Control: SC-7,AC-6
+      UpdateConfig:
+        MaxUnavailable: 1
+
+  #############################################
+  # System Node Group (for critical workloads)
+  # Only created in TST and PRD environments
+  #############################################
+  SystemNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Condition: IsProduction
+    Properties:
+      NodegroupName: !Sub '${ProjectName}-${Environment}-system-nodes'
+      ClusterName: !Ref ClusterName
+      NodeRole: !Ref NodeGroupRoleArn
+      Subnets:
+        - !Ref PodSubnet1Id
+        - !Ref PodSubnet2Id
+        - !Ref PodSubnet3Id
+      ScalingConfig:
+        MinSize: 2
+        MaxSize: 5
+        DesiredSize: 3
+      InstanceTypes:
+        - m5.large
+        - m5a.large
+      AmiType: !Ref AmiType
+      CapacityType: ON_DEMAND  # Always on-demand for system workloads
+      DiskSize: !Ref NodeDiskSize
+      Labels:
+        role: system
+        environment: !Ref Environment
+        project: !Ref ProjectName
+      Taints:
+        - Key: CriticalAddonsOnly
+          Value: 'true'
+          Effect: NO_SCHEDULE
+      Tags:
+        Environment: !Ref Environment
+        Owner: !Ref Owner
+        SecurityLevel: restricted
+        IaC_Version: !Ref IaCVersion
+        NIST_Control: SC-7,AC-6
+      UpdateConfig:
+        MaxUnavailable: 1
+
+Outputs:
+  GeneralNodeGroupName:
+    Description: Name of the general purpose node group
+    Value: !Ref GeneralNodeGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-general-nodegroup-name'
+
+  GeneralNodeGroupArn:
+    Description: ARN of the general purpose node group
+    Value: !GetAtt GeneralNodeGroup.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-general-nodegroup-arn'
+
+  SystemNodeGroupName:
+    Condition: IsProduction
+    Description: Name of the system node group
+    Value: !Ref SystemNodeGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-system-nodegroup-name'
+
+  SystemNodeGroupArn:
+    Condition: IsProduction
+    Description: ARN of the system node group
+    Value: !GetAtt SystemNodeGroup.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-system-nodegroup-arn'
