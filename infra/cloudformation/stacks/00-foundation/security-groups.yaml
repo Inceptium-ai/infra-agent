@@ -1,0 +1,424 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Security Groups for Infrastructure Agent - Zero Trust Network
+  NIST 800-53 R5 Controls: SC-7 (Boundary Protection), AC-6 (Least Privilege)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where security groups will be created
+
+  AllowedCidrBlocks:
+    Type: CommaDelimitedList
+    Default: 10.0.0.0/8
+    Description: CIDR blocks allowed for bastion SSH access (corporate/VPN IPs)
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team or individual responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - VpcId
+          - AllowedCidrBlocks
+
+Resources:
+  #############################################
+  # ALB Security Group - Public Internet Access
+  #############################################
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-alb-sg'
+      GroupDescription: Security group for Application Load Balancer - HTTPS only from internet
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # NIST SC-8: Only HTTPS allowed from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: '::/0'
+          Description: Allow HTTPS from internet (IPv6)
+      SecurityGroupEgress:
+        # Allow outbound to EKS nodes only
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 100.64.0.0/16
+          Description: Allow outbound to EKS pod subnets
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: public
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,SC-8
+
+  #############################################
+  # Bastion Security Group - Restricted SSH
+  #############################################
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-bastion-sg'
+      GroupDescription: Security group for Bastion host - SSH via Session Manager only
+      VpcId: !Ref VpcId
+      # No SSH ingress - access via SSM Session Manager only
+      SecurityGroupIngress: []
+      SecurityGroupEgress:
+        # Allow HTTPS for SSM agent
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS for SSM agent
+        # Allow access to EKS API
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: Allow access to EKS API within VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,AC-6
+
+  #############################################
+  # EKS Cluster Security Group - Control Plane
+  #############################################
+  EksClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-eks-cluster-sg'
+      GroupDescription: Security group for EKS cluster control plane
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow HTTPS from bastion for kubectl
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: Allow kubectl from bastion
+      SecurityGroupEgress:
+        # Allow all outbound (EKS control plane needs to communicate with AWS services)
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound for AWS service communication
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-cluster-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: restricted
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,AC-6
+
+  # Self-reference rule for cluster-to-node communication
+  EksClusterSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EksClusterSecurityGroup
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref EksClusterSecurityGroup
+      Description: Allow cluster self-communication
+
+  #############################################
+  # EKS Nodes Security Group - Worker Nodes
+  #############################################
+  EksNodesSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-eks-nodes-sg'
+      GroupDescription: Security group for EKS worker nodes
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow traffic from ALB
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Allow all traffic from ALB
+        # Allow traffic from EKS control plane
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EksClusterSecurityGroup
+          Description: Allow HTTPS from EKS control plane
+        - IpProtocol: tcp
+          FromPort: 10250
+          ToPort: 10250
+          SourceSecurityGroupId: !Ref EksClusterSecurityGroup
+          Description: Allow kubelet API from EKS control plane
+        # Allow traffic from bastion for debugging
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: Allow SSH from bastion for debugging
+      SecurityGroupEgress:
+        # Allow all outbound for container image pulls, etc.
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound for container operations
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-nodes-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,AC-6
+
+  # Node-to-node communication
+  EksNodesSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EksNodesSecurityGroup
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref EksNodesSecurityGroup
+      Description: Allow node-to-node communication
+
+  # Allow cluster to node communication
+  EksClusterToNodesIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EksClusterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref EksNodesSecurityGroup
+      Description: Allow node-to-cluster API communication
+
+  #############################################
+  # RDS Security Group - Database Access
+  #############################################
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-rds-sg'
+      GroupDescription: Security group for RDS databases - EKS nodes only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow PostgreSQL from EKS nodes only
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EksNodesSecurityGroup
+          Description: Allow PostgreSQL from EKS nodes
+        # Allow from bastion for admin access
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: Allow PostgreSQL from bastion for admin
+      SecurityGroupEgress:
+        # No outbound needed for RDS
+        - IpProtocol: '-1'
+          CidrIp: 127.0.0.1/32
+          Description: Deny all outbound (localhost only)
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-rds-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: restricted
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,AC-6
+
+  #############################################
+  # VPC Endpoints Security Group
+  #############################################
+  VpcEndpointsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-vpce-sg'
+      GroupDescription: Security group for VPC endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow HTTPS from all VPC CIDR
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: Allow HTTPS from VPC primary CIDR
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 100.64.0.0/16
+          Description: Allow HTTPS from VPC secondary CIDR (pods)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7
+
+  #############################################
+  # Istio Ingress Gateway Security Group
+  #############################################
+  IstioIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-istio-ingress-sg'
+      GroupDescription: Security group for Istio ingress gateway pods
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow traffic from ALB
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Allow HTTP from ALB (internal)
+        - IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Allow HTTPS from ALB
+        - IpProtocol: tcp
+          FromPort: 15021
+          ToPort: 15021
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Allow health check from ALB
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound for service mesh
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-istio-ingress-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-7,SC-8
+
+Outputs:
+  AlbSecurityGroupId:
+    Description: Security Group ID for Application Load Balancer
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-sg-id'
+
+  AlbSecurityGroupArn:
+    Description: Security Group ARN for Application Load Balancer
+    Value: !GetAtt AlbSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-sg-arn'
+
+  BastionSecurityGroupId:
+    Description: Security Group ID for Bastion host
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-bastion-sg-id'
+
+  EksClusterSecurityGroupId:
+    Description: Security Group ID for EKS cluster control plane
+    Value: !Ref EksClusterSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-cluster-sg-id'
+
+  EksNodesSecurityGroupId:
+    Description: Security Group ID for EKS worker nodes
+    Value: !Ref EksNodesSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-nodes-sg-id'
+
+  RdsSecurityGroupId:
+    Description: Security Group ID for RDS databases
+    Value: !Ref RdsSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-rds-sg-id'
+
+  VpcEndpointsSecurityGroupId:
+    Description: Security Group ID for VPC endpoints
+    Value: !Ref VpcEndpointsSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-vpce-sg-id'
+
+  IstioIngressSecurityGroupId:
+    Description: Security Group ID for Istio ingress gateway
+    Value: !Ref IstioIngressSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-istio-ingress-sg-id'

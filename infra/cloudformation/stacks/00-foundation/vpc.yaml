@@ -1,0 +1,733 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  VPC Foundation Stack for AI Infrastructure Agent
+  Zero Trust network architecture with non-routable pod subnets (100.64.x.x)
+  NIST 800-53 R5 Controls: SC-7, AU-2, CM-8
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming (kebab-case)
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  Owner:
+    Type: String
+    Default: infrastructure-team
+    Description: Team or individual owning this infrastructure
+
+  SecurityLevel:
+    Type: String
+    AllowedValues:
+      - Internal
+      - Confidential
+    Default: Internal
+    Description: Security classification level
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: Primary VPC CIDR block
+
+  PodCidr:
+    Type: String
+    Default: 100.64.0.0/16
+    Description: Secondary CIDR for non-routable pod subnets
+
+Mappings:
+  SubnetCidrs:
+    PublicSubnet1:
+      CIDR: 10.0.0.0/22
+    PublicSubnet2:
+      CIDR: 10.0.4.0/22
+    PublicSubnet3:
+      CIDR: 10.0.8.0/22
+    PrivateSubnet1:
+      CIDR: 10.0.48.0/22
+    PrivateSubnet2:
+      CIDR: 10.0.52.0/22
+    PrivateSubnet3:
+      CIDR: 10.0.56.0/22
+    PodSubnet1:
+      CIDR: 100.64.0.0/18
+    PodSubnet2:
+      CIDR: 100.64.64.0/18
+    PodSubnet3:
+      CIDR: 100.64.128.0/18
+
+Resources:
+  # =============================================================================
+  # VPC
+  # =============================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: NIST-Control
+          Value: CM-8
+
+  # Secondary CIDR for non-routable pod subnets
+  VpcCidrBlockPods:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PodCidr
+
+  # =============================================================================
+  # Internet Gateway
+  # =============================================================================
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-igw
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # =============================================================================
+  # Public Subnets (ALB only)
+  # =============================================================================
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PublicSubnet1, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-${AWS::Region}a
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: SubnetType
+          Value: public
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PublicSubnet2, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-${AWS::Region}b
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: SubnetType
+          Value: public
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PublicSubnet3, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-${AWS::Region}c
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: SubnetType
+          Value: public
+
+  # =============================================================================
+  # Private Subnets (Bastion, NAT, RDS)
+  # =============================================================================
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PrivateSubnet1, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-${AWS::Region}a
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: SubnetType
+          Value: private
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PrivateSubnet2, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-${AWS::Region}b
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: SubnetType
+          Value: private
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PrivateSubnet3, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-${AWS::Region}c
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: SubnetType
+          Value: private
+
+  # =============================================================================
+  # Pod Subnets (100.64.x.x - Non-routable from internet)
+  # =============================================================================
+  PodSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockPods
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PodSubnet1, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-${AWS::Region}a
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: SubnetType
+          Value: pod
+
+  PodSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockPods
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PodSubnet2, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-${AWS::Region}b
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: SubnetType
+          Value: pod
+
+  PodSubnet3:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockPods
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !FindInMap [SubnetCidrs, PodSubnet3, CIDR]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-${AWS::Region}c
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: !Ref SecurityLevel
+        - Key: IaC_Version
+          Value: !Sub '{{resolve:ssm:/infra-agent/git-sha:1}}'
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: SubnetType
+          Value: pod
+
+  # =============================================================================
+  # NAT Gateways (one per AZ for HA)
+  # =============================================================================
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-eip-1
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-eip-2
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  NatGateway3EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-eip-3
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-1
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-2
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  NatGateway3:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway3EIP.AllocationId
+      SubnetId: !Ref PublicSubnet3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-3
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  # =============================================================================
+  # Route Tables
+  # =============================================================================
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-rt
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet3
+
+  # Private Route Tables (one per AZ for NAT redundancy)
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-rt-1
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-rt-2
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  PrivateRouteTable3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-private-rt-3
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPrivateRoute3:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable3
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway3
+
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable3
+      SubnetId: !Ref PrivateSubnet3
+
+  # Pod Route Tables (outbound via NAT for image pulls)
+  PodRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-rt-1
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPodRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PodRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PodSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PodRouteTable1
+      SubnetId: !Ref PodSubnet1
+
+  PodRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-rt-2
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPodRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PodRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PodSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PodRouteTable2
+      SubnetId: !Ref PodSubnet2
+
+  PodRouteTable3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-pod-rt-3
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  DefaultPodRoute3:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PodRouteTable3
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway3
+
+  PodSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PodRouteTable3
+      SubnetId: !Ref PodSubnet3
+
+  # =============================================================================
+  # VPC Flow Logs (NIST AU-2 Compliance)
+  # =============================================================================
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-flow-log-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flow-logs-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ProjectName}-${Environment}-vpc-flow-logs:*
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-flow-log-role
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: NIST-Control
+          Value: AU-2
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${ProjectName}-${Environment}-vpc-flow-logs
+      RetentionInDays: 90
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc-flow-logs
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: NIST-Control
+          Value: AU-2
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      LogGroupName: !Ref FlowLogGroup
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+      LogFormat: '${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${vpc-id} ${subnet-id} ${instance-id} ${tcp-flags} ${type} ${pkt-srcaddr} ${pkt-dstaddr}'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc-flow-log
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: NIST-Control
+          Value: AU-2,AU-3
+
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-vpc-id
+
+  VpcCidr:
+    Description: VPC CIDR block
+    Value: !Ref VpcCidr
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-vpc-cidr
+
+  PodCidr:
+    Description: Pod CIDR block (non-routable)
+    Value: !Ref PodCidr
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-pod-cidr
+
+  PublicSubnetIds:
+    Description: Public subnet IDs (comma-separated)
+    Value: !Join [',', [!Ref PublicSubnet1, !Ref PublicSubnet2, !Ref PublicSubnet3]]
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-public-subnet-ids
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs (comma-separated)
+    Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2, !Ref PrivateSubnet3]]
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-private-subnet-ids
+
+  PodSubnetIds:
+    Description: Pod subnet IDs (comma-separated)
+    Value: !Join [',', [!Ref PodSubnet1, !Ref PodSubnet2, !Ref PodSubnet3]]
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-pod-subnet-ids
+
+  InternetGatewayId:
+    Description: Internet Gateway ID
+    Value: !Ref InternetGateway
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-igw-id
+
+  NatGateway1Id:
+    Description: NAT Gateway 1 ID
+    Value: !Ref NatGateway1
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-nat-1-id
+
+  FlowLogGroupName:
+    Description: VPC Flow Log CloudWatch Log Group
+    Value: !Ref FlowLogGroup
+    Export:
+      Name: !Sub ${ProjectName}-${Environment}-flow-log-group

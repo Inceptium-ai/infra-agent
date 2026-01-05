@@ -1,0 +1,110 @@
+I want to an AI agent to build an EKS cluster on AWS and be an export on EKS and how to build the underlying networking, security, compute, and storage for the EKS cluster.  It needs to follow the security controls of NIST-800 R5.  We want to use OSS with vendors that provide helm charts to be deployed into the K8s cluster.  For all databases instead of using a container pod, we will use RDS. And for all load balancers, we will use ALB.  So we will use AWS mananged services where it makes sense from a cost perspective.  We want to start with a planning phase following the pattern in the project ymuwakki/Genesis-Core.  We will need to create .md files that includes a workflow and test coverage. We want to build in phases.  We need to decide how many agents we need? For example, a chat agent and a K8s agent, a deployment agent, a test or verify agent, etc. See below for some requirement details.
+
+
+This document defines a hybrid-ready, cloud-native architecture deployed on AWS EKS in the us-east-1 region. The system follows a Zero Trust security model and uses AWS CloudFormation (IaC) to manage all compute and networking. An AI Infrastructure Agent serves as the primary operator for the DEV environment, enforcing security standards and managing configuration drift.
+2. Infrastructure & Deployment Pattern
+2.1 Multi-Tier / Event-Based Architecture
+Compute Tier: Microservices deployed as container instances on AWS EKS worker nodes.
+Auto-Scaling & HA: Kubernetes Horizontal Pod Autoscaler (HPA) and Cluster Autoscaler ensure high availability and automatic failover.
+Event-Driven: Integrated with AWS event services (e.g., SQS/SNS) to support asynchronous microservice communication.
+2.2 Cloud Environment Strategy
+Environments: Three distinct AWS accounts/environments: DEV, TST, and PRD.
+The DEV Gate: All new infrastructure and application code are first deployed to DEV. The AI Agent builds, manages, and tests the DEV stack. Promotion to TST and PRD only occurs after AI validation and test coverage completion.
+3. The AI Infrastructure Agent (IaC Manager)
+The AI Agent is the "brain" of the infrastructure, interacting via a Chat Interface.
+IaC Management: Writes, updates, and deletes AWS CloudFormation templates.
+NIST Compliance: Every command given to the agent is filtered through NIST SP 800-53 Rev 5 controls.
+Drift Control (CM-8): The agent monitors the DEV environment for manual changes (drift) and automatically reverts them to the authorized version.
+Test Generation: The agent automatically prepares test coverage for all new infrastructure to ensure it works as intended before promotion.
+4. Security & Zero Trust (NIST 800-53 R5)
+
+
+5. CI/CD Pipeline & Git Flow
+5.1 Branching Strategy
+develop Branch: Triggers deployment to DEV. Managed by the AI Agent.
+release Branch: Triggers deployment to TST after DEV tests pass.
+main Branch: Triggers Blue/Green Deployment to PRD.
+5.2 GitHub Actions Pipeline Flow
+Commit/Merge: Triggers the CI build.
+Image Scanning: Trivy (OSS) scans the container image. Gate: Pipeline fails if "Critical" or "High" CVEs are found.
+IaC Linting: AI Agent runs cfn-lint and cfn-guard on CloudFormation templates.
+Deployment (DEV): AI Agent updates the DEV stack. Runs test coverage.
+Promotion (TST/PRD): Once DEV tests pass, the pipeline pushes infrastructure updates to higher environments.
+6. Observability, Traceability & Telemetry
+The LGTM Stack is integrated via Istio for a unified visibility layer.
+L (Loki): Centralized logging for all containers and system events.
+G (Grafana): The "Single Pane of Glass" dashboard for the operator.
+T (Tempo): Distributed tracing to track requests across the event-based architecture.
+M (Mimir / Prometheus): High-scale metrics tracking for performance and auto-scaling.
+7. Key Operational Gates
+Gate 1 (Security): Trivy scan must return zero "Critical" vulnerabilities.
+Gate 2 (AI Validation): AI Agent must confirm CloudFormation templates meet all NIST security controls.
+Gate 3 (Testing): 100% pass rate on the AI-generated test coverage in the DEV environment.
+Gate 4 (Production): Successful Blue/Green shift on the ALB to ensure no downtime during infrastructure or feature updates.
+8. Summary of NIST Control Mapping
+CM-3 (Configuration Change Control): All changes are versioned in Git and applied via CloudFormation.
+SI-2 (Flaw Remediation): Automated Trivy scanning in the pipeline and Trivy Operator in the cluster.
+AU-2 (Audit Record Generation): Centralized logging via Loki and CloudWatch logs.
+CP-10 (System Recovery): Automated failover and Blue/Green rollback capabilities.
+
+9. Pipeline Automation & Triggers
+To maintain a high-frequency deployment rhythm, the GitHub Actions pipelines are orchestrated by three distinct trigger types. Each trigger follows a path through the AI Agent validation in DEV before promotion.
+9.1 Application Code Triggers (App-to-Image)
+Trigger: Push or Merge Request to src/** paths in the microservice repository.
+Action:
+Build: Compiles application code and builds a new Docker image.
+Scan: Executes Trivy scan on the new image.
+Tag: Generates a unique image tag (e.g., git-sha).
+Update: The AI Agent automatically updates the CloudFormation Parameter for the image tag in the associated stack template.
+Gate: Deployment to DEV occurs immediately; TST/PRD promotion occurs upon successful health check of the new image.
+9.2 Configuration Triggers (Helm Chart Updates)
+Trigger: Changes to charts/** or values.yaml files.
+Action:
+Lint: Runs helm lint and kube-linter to check for Kubernetes best practices.
+Package: Packages the updated Helm chart and pushes it to an OCI-compliant registry (e.g., Amazon ECR).
+Deploy: The AI Agent triggers a CloudFormation Stack Update using the AWSQS::Kubernetes::Helm resource to apply the new chart version.
+Gate: Validation of Istio mesh routing (VirtualServices/DestinationRules) to ensure no traffic interruption during chart upgrades.
+9.3 Infrastructure Triggers (CloudFormation Templates)
+Trigger: Direct modification of .yaml or .json CloudFormation templates in the infra/** directory.
+Action:
+Static Analysis: AI Agent runs cfn-guard to verify NIST 800-53 compliance (e.g., ensuring no new public subnets were added).
+Change Set Generation: Creates a CloudFormation Change Set to preview the impact on the EKS cluster (nodes, networking, IAM).
+Execution: AI Agent applies the change set to the DEV environment first.
+Gate: CloudFormation Drift Detection must return a "Clean" status after the update.
+10. Integrated Pipeline Execution Logic
+
+11. Contingency Planning & Disaster Recovery (NIST CP Family)
+Since we are using 100% compute on AWS, we must account for regional or cluster-level failure.
+Backup Strategy (CP-9): Use Velero (OSS) to back up Kubernetes cluster metadata and Persistent Volumes (PVs) to an S3 bucket in a different region (e.g., us-west-2).
+Recovery Time Objective (RTO): The AI Agent is programmed to re-provision the entire EKS stack via CloudFormation in the secondary region in under 4 hours.
+State Preservation: Event-based data in transit (SQS/SNS) is inherently resilient, but RDS/S3 cross-region replication is required for data at rest.
+12. Tagging & Resource Accountability (NIST CM-8)
+NIST requires that every resource be uniquely identifiable and traceable to a "Business Owner."
+Global Tagging Policy: The AI Agent automatically applies a mandatory tag set to every CloudFormation resource:
+Environment: (DEV/TST/PRD)
+Owner: (The Operator/Project Name)
+SecurityLevel: (Confidential/Internal)
+IaC_Version: (The GitHub Git-SHA)
+Enforcement: The AI Agent will refuse to deploy any CloudFormation template that lacks these tags.
+13. Cost Management & Resource Lifecycle (NIST PM-3)
+To prevent "Cloud Sprawl" and optimize the 100% AWS compute spend:
+Tooling: Kubecost (OSS) is deployed to the cluster. It provides the AI Agent with visibility into the cost of each microservice.
+Lifecycle: In the DEV environment, the AI Agent is authorized to "Reap" (delete) resources that haven't received traffic for 72 hours, ensuring the AWS bill stays lean.
+14. Access Certification & Identity (NIST AC-2, IA-5)
+Operator Interface Security: The chat interface used by the operator must be secured via Multi-Factor Authentication (MFA).
+Just-In-Time (JIT) Access: The AI Agent does not have permanent admin credentials for PRD. It requests temporary "AssumeRole" tokens from AWS STS only when a deployment is triggered by a signed GitHub Action.
+
+15. CloudFormation to EKS/Helm Integration
+This section describes how the AI Agent uses CloudFormation to bridge the gap between AWS resources and the Kubernetes cluster.
+15.1 The Helm Resource Provider
+The architecture utilizes the AWS CloudFormation Helm Resource Provider (or the AWSQS::Kubernetes::Helm resource). This allows Helm charts to be treated as standard CloudFormation resources.
+
+Mechanism: When the CloudFormation stack is updated, AWS triggers a "Provider" (running as a Lambda function or an EKS Add-on) that executes helm upgrade --install.
+Support for Updates:
+Chart Updates: Changing the Chart version in the template triggers a release upgrade.
+Value Updates: Modifying the Values (e.g., changing a replica count or a secret reference) triggers a rolling update of the Kubernetes pods.
+Rollbacks: If the Helm install fails, CloudFormation senses the failure and can roll back the entire stack, maintaining NIST CP-10 (System Recovery).
+15.2 Managing EKS Add-ons
+For core cluster components (like the Trivy Operator or Istio), we use EKS Managed Add-ons via CloudFormation (AWS::EKS::Addon).
+Benefit: AWS manages the lifecycle and security patching of these specific tools, reducing the operational burden on the AI Agent.
+

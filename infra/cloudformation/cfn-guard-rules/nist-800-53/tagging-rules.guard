@@ -1,0 +1,189 @@
+# NIST 800-53 Rev 5 - CM-8 System Inventory Tagging Rules
+# Infrastructure Agent - Mandatory Tagging Validation
+#
+# All resources must have the following tags:
+# - Environment: dev, tst, prd
+# - Owner: Team or individual responsible
+# - SecurityLevel: public, internal, confidential, restricted
+# - IaC_Version: Version of the IaC template
+
+#############################################
+# Tag Value Validation
+#############################################
+
+# Valid environment values
+let valid_environments = ["dev", "tst", "prd"]
+
+# Valid security levels
+let valid_security_levels = ["public", "internal", "confidential", "restricted"]
+
+#############################################
+# VPC Resources Tagging
+#############################################
+
+rule vpc_environment_tag when %Resources.*[ Type == "AWS::EC2::VPC" ] {
+    let vpc_tags = %Resources.*[ Type == "AWS::EC2::VPC" ].Properties.Tags
+    %vpc_tags[*] {
+        when Key == "Environment" {
+            Value IN %valid_environments
+        }
+    }
+    <<
+        CM-8: VPC Environment tag must be one of: dev, tst, prd
+    >>
+}
+
+rule vpc_security_level_tag when %Resources.*[ Type == "AWS::EC2::VPC" ] {
+    let vpc_tags = %Resources.*[ Type == "AWS::EC2::VPC" ].Properties.Tags
+    %vpc_tags[*] {
+        when Key == "SecurityLevel" {
+            Value IN %valid_security_levels
+        }
+    }
+    <<
+        CM-8: VPC SecurityLevel tag must be one of: public, internal, confidential, restricted
+    >>
+}
+
+#############################################
+# Subnet Tagging
+#############################################
+
+rule subnet_has_environment_tag when %Resources.*[ Type == "AWS::EC2::Subnet" ] {
+    let subnet_tags = %Resources.*[ Type == "AWS::EC2::Subnet" ].Properties.Tags
+    some %subnet_tags[*].Key == "Environment"
+    <<
+        CM-8: Subnets must have an Environment tag
+    >>
+}
+
+rule subnet_has_owner_tag when %Resources.*[ Type == "AWS::EC2::Subnet" ] {
+    let subnet_tags = %Resources.*[ Type == "AWS::EC2::Subnet" ].Properties.Tags
+    some %subnet_tags[*].Key == "Owner"
+    <<
+        CM-8: Subnets must have an Owner tag
+    >>
+}
+
+#############################################
+# Security Group Tagging
+#############################################
+
+rule security_group_has_environment_tag when %Resources.*[ Type == "AWS::EC2::SecurityGroup" ] {
+    let sg_tags = %Resources.*[ Type == "AWS::EC2::SecurityGroup" ].Properties.Tags
+    some %sg_tags[*].Key == "Environment"
+    <<
+        CM-8: Security Groups must have an Environment tag
+    >>
+}
+
+rule security_group_has_security_level_tag when %Resources.*[ Type == "AWS::EC2::SecurityGroup" ] {
+    let sg_tags = %Resources.*[ Type == "AWS::EC2::SecurityGroup" ].Properties.Tags
+    some %sg_tags[*].Key == "SecurityLevel"
+    <<
+        CM-8: Security Groups must have a SecurityLevel tag
+    >>
+}
+
+#############################################
+# IAM Role Tagging
+#############################################
+
+rule iam_role_has_environment_tag when %Resources.*[ Type == "AWS::IAM::Role" ] {
+    let role_tags = %Resources.*[ Type == "AWS::IAM::Role" ].Properties.Tags
+    some %role_tags[*].Key == "Environment"
+    <<
+        CM-8: IAM Roles must have an Environment tag
+    >>
+}
+
+rule iam_role_has_owner_tag when %Resources.*[ Type == "AWS::IAM::Role" ] {
+    let role_tags = %Resources.*[ Type == "AWS::IAM::Role" ].Properties.Tags
+    some %role_tags[*].Key == "Owner"
+    <<
+        CM-8: IAM Roles must have an Owner tag
+    >>
+}
+
+#############################################
+# EKS Cluster Tagging
+#############################################
+
+rule eks_cluster_has_all_tags when %Resources.*[ Type == "AWS::EKS::Cluster" ] {
+    let eks_tags = %Resources.*[ Type == "AWS::EKS::Cluster" ].Properties.Tags
+    some %eks_tags[*].Key == "Environment"
+    some %eks_tags[*].Key == "Owner"
+    some %eks_tags[*].Key == "SecurityLevel"
+    some %eks_tags[*].Key == "IaC_Version"
+    <<
+        CM-8: EKS Clusters must have all mandatory tags (Environment, Owner, SecurityLevel, IaC_Version)
+    >>
+}
+
+#############################################
+# S3 Bucket Tagging
+#############################################
+
+rule s3_bucket_has_all_tags when %Resources.*[ Type == "AWS::S3::Bucket" ] {
+    let bucket_tags = %Resources.*[ Type == "AWS::S3::Bucket" ].Properties.Tags
+    some %bucket_tags[*].Key == "Environment"
+    some %bucket_tags[*].Key == "Owner"
+    some %bucket_tags[*].Key == "SecurityLevel"
+    <<
+        CM-8: S3 Buckets must have mandatory tags (Environment, Owner, SecurityLevel)
+    >>
+}
+
+#############################################
+# RDS Instance Tagging
+#############################################
+
+rule rds_instance_has_all_tags when %Resources.*[ Type == "AWS::RDS::DBInstance" ] {
+    let rds_tags = %Resources.*[ Type == "AWS::RDS::DBInstance" ].Properties.Tags
+    some %rds_tags[*].Key == "Environment"
+    some %rds_tags[*].Key == "Owner"
+    some %rds_tags[*].Key == "SecurityLevel"
+    <<
+        CM-8: RDS instances must have mandatory tags (Environment, Owner, SecurityLevel)
+    >>
+}
+
+#############################################
+# Load Balancer Tagging
+#############################################
+
+rule alb_has_all_tags when %Resources.*[ Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" ] {
+    let alb_tags = %Resources.*[ Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" ].Properties.Tags
+    some %alb_tags[*].Key == "Environment"
+    some %alb_tags[*].Key == "Owner"
+    <<
+        CM-8: Application Load Balancers must have mandatory tags (Environment, Owner)
+    >>
+}
+
+#############################################
+# CloudWatch Log Group Tagging
+#############################################
+
+rule log_group_has_tags when %Resources.*[ Type == "AWS::Logs::LogGroup" ] {
+    let log_tags = %Resources.*[ Type == "AWS::Logs::LogGroup" ].Properties.Tags
+    when %log_tags EXISTS {
+        some %log_tags[*].Key == "Environment"
+    }
+    <<
+        CM-8: CloudWatch Log Groups should have an Environment tag
+    >>
+}
+
+#############################################
+# NAT Gateway Tagging
+#############################################
+
+rule nat_gateway_has_tags when %Resources.*[ Type == "AWS::EC2::NatGateway" ] {
+    let nat_tags = %Resources.*[ Type == "AWS::EC2::NatGateway" ].Properties.Tags
+    some %nat_tags[*].Key == "Environment"
+    some %nat_tags[*].Key == "Owner"
+    <<
+        CM-8: NAT Gateways must have mandatory tags (Environment, Owner)
+    >>
+}
