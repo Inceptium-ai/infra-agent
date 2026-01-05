@@ -1,0 +1,12 @@
+# ENIConfig values for DEV environment
+# Required for VPC CNI custom networking with 100.64.x.x pod subnets
+
+securityGroupId: sg-02e4b68558102e5a0
+
+eniconfigs:
+  - name: us-east-1a
+    subnetId: subnet-0d5b187e5154ed041  # 100.64.0.0/18
+  - name: us-east-1b
+    subnetId: subnet-07946883c653bac89  # 100.64.64.0/18
+  - name: us-east-1c
+    subnetId: subnet-024909affbd741f60  # 100.64.128.0/18

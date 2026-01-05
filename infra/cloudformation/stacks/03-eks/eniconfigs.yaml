@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  ENIConfig CRDs for VPC CNI Custom Networking
+  Required when AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=true
+  Maps each AZ to its pod subnet (100.64.x.x)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+
+  Environment:
+    Type: String
+    Default: dev
+
+  ClusterName:
+    Type: String
+    Description: EKS cluster name
+
+  PodSubnet1Id:
+    Type: String
+    Description: Pod subnet in us-east-1a (100.64.0.0/18)
+
+  PodSubnet2Id:
+    Type: String
+    Description: Pod subnet in us-east-1b (100.64.64.0/18)
+
+  PodSubnet3Id:
+    Type: String
+    Description: Pod subnet in us-east-1c (100.64.128.0/18)
+
+  NodesSecurityGroupId:
+    Type: String
+    Description: Security group for EKS nodes
+
+# Note: AWS CloudFormation doesn't support ENIConfig CRD directly
+# This template documents the required configuration
+# ENIConfigs must be applied via kubectl
+
+Metadata:
+  ENIConfigManifests:
+    Description: |
+      Apply these manifests via kubectl from bastion:
+
+      ---
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1a
+      spec:
+        securityGroups:
+          - <NodesSecurityGroupId>
+        subnet: <PodSubnet1Id>
+      ---
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1b
+      spec:
+        securityGroups:
+          - <NodesSecurityGroupId>
+        subnet: <PodSubnet2Id>
+      ---
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1c
+      spec:
+        securityGroups:
+          - <NodesSecurityGroupId>
+        subnet: <PodSubnet3Id>
+
+Outputs:
+  ENIConfigCommand:
+    Description: Command to apply ENIConfigs
+    Value: !Sub |
+      kubectl apply -f - <<EOF
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1a
+      spec:
+        securityGroups:
+          - ${NodesSecurityGroupId}
+        subnet: ${PodSubnet1Id}
+      ---
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1b
+      spec:
+        securityGroups:
+          - ${NodesSecurityGroupId}
+        subnet: ${PodSubnet2Id}
+      ---
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: us-east-1c
+      spec:
+        securityGroups:
+          - ${NodesSecurityGroupId}
+        subnet: ${PodSubnet3Id}
+      EOF

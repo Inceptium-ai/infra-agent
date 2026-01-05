@@ -460,7 +460,47 @@ SSM shell environment differs from normal SSH. Always set KUBECONFIG explicitly 
 
 ---
 
-## 16. curl-minimal Conflict on Amazon Linux 2023
+## 16. ENIConfig CRDs Required for VPC CNI Custom Networking
+
+**Error:**
+```
+ENIConfig.crd.k8s.amazonaws.com "us-east-1c" not found
+Initialization failure: Failed to attach any ENIs for custom networking
+```
+
+**Cause:**
+When `AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=true` is set, VPC CNI requires ENIConfig CRDs to map each AZ to its pod subnet. Without these, pods cannot get IPs from the secondary CIDR (100.64.x.x).
+
+**Fix:**
+Create ENIConfig resources for each AZ via Helm chart:
+
+```yaml
+# infra/helm/charts/eniconfigs/templates/eniconfigs.yaml
+apiVersion: crd.k8s.amazonaws.com/v1alpha1
+kind: ENIConfig
+metadata:
+  name: us-east-1a
+spec:
+  securityGroups:
+    - <nodes-security-group-id>
+  subnet: <pod-subnet-id-for-az>
+```
+
+**Deploy:**
+```bash
+helm upgrade --install eniconfigs infra/helm/charts/eniconfigs \
+  -f infra/helm/values/eniconfigs/dev.yaml
+```
+
+**Lesson:**
+When using VPC CNI custom networking:
+1. ENIConfig CRDs must exist BEFORE nodes join the cluster
+2. Each AZ needs its own ENIConfig pointing to the pod subnet
+3. Use Helm chart for IaC compliance - don't apply manually via kubectl
+
+---
+
+## 17. curl-minimal Conflict on Amazon Linux 2023
 
 **Error:**
 ```
@@ -533,3 +573,84 @@ print(sorted(versions, reverse=True))
 # Use SSM parameter for always-current AMI
 ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
 ```
+
+---
+
+## 18. VPC CNI and ENIConfig Deployment Order (Chicken-and-Egg Problem)
+
+**Error:**
+```
+no matches for kind "ENIConfig" in version "crd.k8s.amazonaws.com/v1alpha1"
+ensure CRDs are installed first
+```
+
+**Cause:**
+Attempting to create ENIConfig resources before the VPC CNI add-on is installed. The ENIConfig CRD is installed BY the VPC CNI add-on. But custom networking requires ENIConfigs to exist.
+
+**Root Issue:**
+The VPC CNI add-on CloudFormation stack was configured with `AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG=true` from the start. This causes VPC CNI to look for ENIConfigs immediately on startup, but those can't exist until the CRD is created.
+
+**Correct Deployment Order:**
+1. **Deploy VPC CNI add-on WITHOUT custom networking** (creates the CRD)
+   ```yaml
+   ConfigurationValues: '{"env":{}}'  # No custom networking yet
+   ```
+2. **Wait for VPC CNI to be ACTIVE** and verify CRD exists:
+   ```bash
+   kubectl get crd eniconfigs.crd.k8s.amazonaws.com
+   ```
+3. **Deploy ENIConfig resources via Helm**:
+   ```bash
+   helm upgrade --install eniconfigs infra/helm/charts/eniconfigs \
+     -f infra/helm/values/eniconfigs/dev.yaml
+   ```
+4. **Update VPC CNI to enable custom networking**:
+   ```bash
+   aws eks update-addon --cluster-name <cluster> --addon-name vpc-cni \
+     --configuration-values '{"env":{"AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG":"true","ENI_CONFIG_LABEL_DEF":"topology.kubernetes.io/zone"}}'
+   ```
+5. **Restart aws-node pods** to pick up new config:
+   ```bash
+   kubectl rollout restart daemonset aws-node -n kube-system
+   ```
+
+**Alternative: Two-Phase CloudFormation Deployment**
+Split the EKS add-ons stack into two phases:
+- `03-eks/addons-phase1.yaml` - VPC CNI without custom networking, CoreDNS, kube-proxy
+- `03-eks/addons-phase2.yaml` - Update VPC CNI with custom networking (after ENIConfigs exist)
+
+**Lesson:**
+VPC CNI custom networking requires careful sequencing. The CRD must exist before creating ENIConfig resources, but ENIConfigs must exist before enabling custom networking in VPC CNI. Plan deployments in phases.
+
+---
+
+## 19. Custom Networking Required for Non-Routable Pod Subnets (100.64.x.x)
+
+**Question:**
+Why do we need VPC CNI custom networking?
+
+**Answer:**
+Custom networking is **required** to force pods to use the 100.64.x.x (RFC 6598) subnets instead of the node subnets.
+
+| VPC CNI Mode | Where Pods Get IPs |
+|--------------|-------------------|
+| **Default** | Same subnet as node's primary ENI (e.g., 10.0.48.0/20) |
+| **Custom Networking** | Subnet specified in ENIConfig (e.g., 100.64.0.0/18) |
+
+**Without custom networking:**
+```
+Node in 10.0.48.0/20 → Pods get IPs from 10.0.48.0/20
+```
+
+**With custom networking + ENIConfigs:**
+```
+Node in 10.0.48.0/20 → Pods get IPs from 100.64.0.0/18 (per ENIConfig)
+```
+
+**Why 100.64.x.x is a requirement:**
+1. **Security** - Non-routable from internet (NIST SC-7 boundary protection)
+2. **IP Isolation** - Dedicated IP space for pods, separate from infrastructure
+3. **No conflicts** - Won't overlap with corporate networks (typically 10.x or 172.x)
+
+**Lesson:**
+If your architecture requires pods to use a specific subnet (like non-routable 100.64.x.x), you MUST use VPC CNI custom networking with ENIConfigs. There is no other way to redirect pod IPs to different subnets.

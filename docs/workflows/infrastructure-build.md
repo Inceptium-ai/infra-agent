@@ -61,6 +61,10 @@ Infrastructure is deployed in the following order to satisfy dependencies:
 │     ├── CoreDNS                                                 │
 │     ├── kube-proxy                                              │
 │     └── Amazon VPC CNI                                          │
+│                                                                 │
+│  6b. ENIConfigs (REQUIRED for custom networking)                │
+│     ├── helm install eniconfigs (Helm chart)                    │
+│     └── Creates ENIConfig CRDs for each AZ → pod subnet         │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼

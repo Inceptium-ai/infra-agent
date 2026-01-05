@@ -4,6 +4,10 @@ Description: |
   Includes: VPC CNI, CoreDNS, kube-proxy, EBS CSI Driver, AWS Load Balancer Controller
   NIST 800-53 R5 Controls: AC-6 (Least Privilege via IRSA)
 
+  DEPLOYMENT ORDER (Two-Phase for Custom Networking):
+  Phase 1: Deploy with EnableCustomNetworking=false (creates VPC CNI, installs ENIConfig CRD)
+  Phase 2: After ENIConfig resources exist, update stack with EnableCustomNetworking=true
+
 Parameters:
   ProjectName:
     Type: String
@@ -22,6 +26,17 @@ Parameters:
   ClusterName:
     Type: String
     Description: Name of the EKS cluster
+
+  EnableCustomNetworking:
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: |
+      Enable VPC CNI custom networking.
+      Phase 1: Set to false to install VPC CNI and create ENIConfig CRD.
+      Phase 2: After deploying ENIConfig resources, set to true to enable custom networking.
 
   OidcProviderArn:
     Type: String
@@ -73,6 +88,9 @@ Parameters:
     Type: String
     Default: v1.54.0-eksbuild.1
     Description: Version of the EBS CSI Driver add-on
+
+Conditions:
+  UseCustomNetworking: !Equals [!Ref EnableCustomNetworking, 'true']
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -250,6 +268,8 @@ Resources:
 
   #############################################
   # VPC CNI Add-on
+  # Phase 1: Basic install with prefix delegation (creates ENIConfig CRD)
+  # Phase 2: Enable custom networking after ENIConfigs exist
   #############################################
   VpcCniAddon:
     Type: AWS::EKS::Addon
@@ -259,15 +279,26 @@ Resources:
       ClusterName: !Ref ClusterName
       ServiceAccountRoleArn: !GetAtt VpcCniRole.Arn
       ResolveConflicts: OVERWRITE
-      ConfigurationValues: !Sub |
-        {
-          "env": {
-            "ENABLE_PREFIX_DELEGATION": "true",
-            "WARM_PREFIX_TARGET": "1",
-            "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
-            "ENI_CONFIG_LABEL_DEF": "topology.kubernetes.io/zone"
-          }
-        }
+      ConfigurationValues: !If
+        - UseCustomNetworking
+        # Phase 2: Custom networking enabled (requires ENIConfigs to exist)
+        - !Sub |
+            {
+              "env": {
+                "ENABLE_PREFIX_DELEGATION": "true",
+                "WARM_PREFIX_TARGET": "1",
+                "AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG": "true",
+                "ENI_CONFIG_LABEL_DEF": "topology.kubernetes.io/zone"
+              }
+            }
+        # Phase 1: Basic install without custom networking (installs ENIConfig CRD)
+        - !Sub |
+            {
+              "env": {
+                "ENABLE_PREFIX_DELEGATION": "true",
+                "WARM_PREFIX_TARGET": "1"
+              }
+            }
       Tags:
         - Key: Environment
           Value: !Ref Environment
