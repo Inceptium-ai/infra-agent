@@ -433,7 +433,34 @@ VPC CNI add-on creation takes 10-15 minutes. Verify IAM, subnet space, and versi
 
 ---
 
-## 15. curl-minimal Conflict on Amazon Linux 2023
+## 15. SSM Shell Doesn't Inherit Root KUBECONFIG
+
+**Error:**
+```
+The connection to the server localhost:8080 was refused
+```
+
+**Cause:**
+SSM Session Manager runs commands with a different environment. The KUBECONFIG at `/root/.kube/config` isn't automatically used.
+
+**Fix:**
+Always export KUBECONFIG explicitly in SSM commands:
+```bash
+export KUBECONFIG=/root/.kube/config && kubectl get nodes
+```
+
+Or add to the user's bashrc during bastion setup:
+```bash
+echo 'export KUBECONFIG=/root/.kube/config' >> /root/.bashrc
+echo 'export KUBECONFIG=/home/ec2-user/.kube/config' >> /home/ec2-user/.bashrc
+```
+
+**Lesson:**
+SSM shell environment differs from normal SSH. Always set KUBECONFIG explicitly or configure it in bashrc during instance setup.
+
+---
+
+## 16. curl-minimal Conflict on Amazon Linux 2023
 
 **Error:**
 ```

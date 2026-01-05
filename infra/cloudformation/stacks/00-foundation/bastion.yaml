@@ -212,6 +212,9 @@ Resources:
           # AWS region
           export AWS_DEFAULT_REGION=${AWS::Region}
 
+          # KUBECONFIG - required for SSM sessions
+          export KUBECONFIG=/root/.kube/config
+
           # Path
           export PATH=$PATH:/usr/local/bin
 
