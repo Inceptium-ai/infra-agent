@@ -25,7 +25,7 @@ Infrastructure is deployed in the following order to satisfy dependencies:
 │     ├── VPC with dual CIDR (10.0.0.0/16 + 100.64.0.0/16)       │
 │     ├── Public Subnets (3 AZs) - ALB only                       │
 │     ├── Private Subnets (3 AZs) - Bastion, NAT, RDS             │
-│     ├── Pod Subnets (3 AZs) - EKS pods (100.64.x.x)            │
+│     ├── Pod/Node Subnets (3 AZs) - EKS nodes AND pods (100.64.x.x)│
 │     ├── Internet Gateway                                        │
 │     ├── NAT Gateways (3 for HA)                                 │
 │     ├── Route Tables                                            │
@@ -52,19 +52,18 @@ Infrastructure is deployed in the following order to satisfy dependencies:
 │     └── Control Plane Logging                                   │
 │                                                                 │
 │  5. EKS Node Groups (node-groups.yaml)                          │
-│     ├── General Purpose Nodes                                   │
+│     ├── General Purpose Nodes (in 100.64.x.x subnets)           │
 │     └── Spot Instances (optional)                               │
 │                                                                 │
 │  6. EKS Add-ons (addons.yaml)                                   │
+│     ├── Amazon VPC CNI (default mode - no custom networking)    │
 │     ├── AWS Load Balancer Controller                            │
 │     ├── Amazon EBS CSI Driver                                   │
 │     ├── CoreDNS                                                 │
-│     ├── kube-proxy                                              │
-│     └── Amazon VPC CNI                                          │
+│     └── kube-proxy                                              │
 │                                                                 │
-│  6b. ENIConfigs (REQUIRED for custom networking)                │
-│     ├── helm install eniconfigs (Helm chart)                    │
-│     └── Creates ENIConfig CRDs for each AZ → pod subnet         │
+│  NOTE: Nodes in 100.64.x.x subnets = pods get 100.64.x.x IPs   │
+│        automatically. No ENIConfigs or custom networking needed.│
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
