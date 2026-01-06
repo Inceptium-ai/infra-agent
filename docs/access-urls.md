@@ -53,7 +53,7 @@ Open separate terminals for each service you want to access:
 
 ```bash
 # Grafana (dashboards, logs, traces)
-kubectl port-forward svc/grafana 3000:80 -n observability
+kubectl port-forward svc/grafana 3000:3000 -n observability
 # Access: http://localhost:3000
 # Credentials: admin / e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO
 
@@ -93,7 +93,7 @@ Save this as `~/bin/infra-agent-services.sh`:
 #!/bin/bash
 # Port forward all services (run after tunnel is established)
 echo "Port forwarding all services..."
-kubectl port-forward svc/grafana 3000:80 -n observability &
+kubectl port-forward svc/grafana 3000:3000 -n observability &
 kubectl port-forward svc/headlamp 8080:80 -n headlamp &
 kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost &
 echo ""
