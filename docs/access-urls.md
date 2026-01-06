@@ -9,10 +9,12 @@ This document provides URLs and access instructions for all infrastructure compo
 | Component | DEV Access | TST | PRD |
 |-----------|------------|-----|-----|
 | Grafana | `kubectl port-forward` → http://localhost:3000 | ALB (future) | ALB + MFA |
+| Kiali | `kubectl port-forward` → http://localhost:20001 | ALB (future) | ALB + MFA |
 | Headlamp | `kubectl port-forward` → http://localhost:8080 | ALB (future) | ALB + MFA |
-| Kubecost | `kubectl port-forward` → http://localhost:9090 | ALB (future) | ALB + MFA |
+| Kubecost | `kubectl port-forward` → http://localhost:9091 | ALB (future) | ALB + MFA |
+| Prometheus | `kubectl port-forward` → http://localhost:9090 | Internal | Internal |
 | Loki | Internal only (via Grafana) | Same | Same |
-| Tempo | Internal only (via Grafana) | Same | Same |
+| Mimir | Internal only (via Grafana) | Same | Same |
 
 ---
 
@@ -52,10 +54,15 @@ kubectl config set-cluster arn:aws:eks:us-east-1:340752837296:cluster/infra-agen
 Open separate terminals for each service you want to access:
 
 ```bash
-# Grafana (dashboards, logs, traces)
+# Grafana (dashboards, logs, metrics)
 kubectl port-forward svc/grafana 3000:3000 -n observability
 # Access: http://localhost:3000
-# Credentials: admin / e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO
+# Credentials: admin / (get from: kubectl get secret grafana -n observability -o jsonpath='{.data.admin-password}' | base64 -d)
+
+# Kiali (Istio traffic visualization)
+kubectl port-forward svc/kiali 20001:20001 -n istio-system
+# Access: http://localhost:20001/kiali
+# Token: kubectl create token kiali-service-account -n istio-system
 
 # Headlamp (K8s admin console)
 kubectl port-forward svc/headlamp 8080:80 -n headlamp
@@ -63,14 +70,18 @@ kubectl port-forward svc/headlamp 8080:80 -n headlamp
 # Token: kubectl create token headlamp -n headlamp
 
 # Kubecost (cost analysis)
-kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost
+kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost
+# Access: http://localhost:9091
+
+# Prometheus (metrics - usually accessed via Grafana)
+kubectl port-forward svc/prometheus-server 9090:80 -n observability
 # Access: http://localhost:9090
 
 # Loki API (usually accessed via Grafana)
-kubectl port-forward svc/loki-gateway 3100:80 -n observability
+kubectl port-forward svc/loki-gateway 3100:3100 -n observability
 
-# Tempo API (usually accessed via Grafana)
-kubectl port-forward svc/tempo 3200:3200 -n observability
+# Mimir API (usually accessed via Grafana)
+kubectl port-forward svc/mimir-gateway 9080:80 -n observability
 ```
 
 ### Quick Access Script
@@ -88,19 +99,23 @@ aws ssm start-session \
 
 ### Multi-Service Port Forward Script
 
-Save this as `~/bin/infra-agent-services.sh`:
+Save this as `~/bin/infra-agent-services.sh` or use `scripts/services.sh`:
 ```bash
 #!/bin/bash
 # Port forward all services (run after tunnel is established)
 echo "Port forwarding all services..."
 kubectl port-forward svc/grafana 3000:3000 -n observability &
+kubectl port-forward svc/kiali 20001:20001 -n istio-system &
 kubectl port-forward svc/headlamp 8080:80 -n headlamp &
-kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost &
+kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost &
+kubectl port-forward svc/prometheus-server 9090:80 -n observability &
 echo ""
 echo "Services available at:"
-echo "  Grafana:  http://localhost:3000"
-echo "  Headlamp: http://localhost:8080"
-echo "  Kubecost: http://localhost:9090"
+echo "  Grafana:    http://localhost:3000"
+echo "  Kiali:      http://localhost:20001/kiali"
+echo "  Headlamp:   http://localhost:8080"
+echo "  Kubecost:   http://localhost:9091"
+echo "  Prometheus: http://localhost:9090"
 echo ""
 echo "Press Ctrl+C to stop all port forwards"
 wait
@@ -168,34 +183,59 @@ wait
 
 ---
 
-### Tempo (Traces)
-**Purpose:** Distributed tracing
+### Kiali (Traffic Visualization)
+**Purpose:** Real-time Istio service mesh traffic visualization
 
-| Environment | Internal URL | Protocol |
-|-------------|--------------|----------|
-| DEV | `http://tempo.observability.svc:3200` | OTLP/gRPC |
-| TST | `http://tempo.observability.svc:3200` | OTLP/gRPC |
-| PRD | `http://tempo.observability.svc:3200` | OTLP/gRPC |
+| Environment | Access Method | Port |
+|-------------|---------------|------|
+| DEV | `kubectl port-forward svc/kiali 20001:20001 -n istio-system` | 20001 |
+| TST | ALB + Cognito (future) | 443 |
+| PRD | ALB + Cognito + MFA (future) | 443 |
 
-**Access via Grafana:**
-1. Open Grafana
-2. Navigate to Explore
-3. Select "Tempo" data source
-4. Search by trace ID or use TraceQL
+**Features:**
+- Real-time traffic flow graph between services
+- Request rates, error rates, latency visualization
+- Service dependency topology
+- Istio configuration validation
+- Traffic animation
 
-**Trace ID Propagation:**
-All services inject `trace_id` into logs for correlation.
+**Access Instructions (DEV):**
+1. Ensure SSM tunnel is running (Step 1 above)
+2. Run: `kubectl port-forward svc/kiali 20001:20001 -n istio-system`
+3. Open browser: http://localhost:20001/kiali
+4. Generate token: `kubectl create token kiali-service-account -n istio-system`
 
 ---
 
-### Mimir (Metrics)
-**Purpose:** Long-term metrics storage
+### Prometheus (Metrics Scraper)
+**Purpose:** Scrape Kubernetes metrics and push to Mimir
 
 | Environment | Internal URL | Query Language |
 |-------------|--------------|----------------|
-| DEV | `http://mimir.observability.svc:9009` | PromQL |
-| TST | `http://mimir.observability.svc:9009` | PromQL |
-| PRD | `http://mimir.observability.svc:9009` | PromQL |
+| DEV | `http://prometheus-server.observability.svc:80` | PromQL |
+| TST | `http://prometheus-server.observability.svc:80` | PromQL |
+| PRD | `http://prometheus-server.observability.svc:80` | PromQL |
+
+**Access Instructions (DEV):**
+1. Ensure SSM tunnel is running
+2. Run: `kubectl port-forward svc/prometheus-server 9090:80 -n observability`
+3. Open browser: http://localhost:9090
+
+**Data Flow:**
+```
+[K8s Pods/Nodes] → [Prometheus SCRAPES] → [remote_write] → [Mimir STORES]
+```
+
+---
+
+### Mimir (Metrics Storage)
+**Purpose:** Long-term metrics storage (S3-backed)
+
+| Environment | Internal URL | Query Language |
+|-------------|--------------|----------------|
+| DEV | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
+| TST | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
+| PRD | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
 
 **Access via Grafana:**
 1. Open Grafana
@@ -455,14 +495,14 @@ infra-agent security report --namespace infra-agent
 
 | Environment | Access Method |
 |-------------|---------------|
-| DEV | `kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost` → http://localhost:9090 |
+| DEV | `kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost` → http://localhost:9091 |
 | TST | ALB (future) |
 | PRD | ALB + MFA (future) |
 
 **Access Instructions (DEV):**
 1. Ensure SSM tunnel is running (Step 1 above)
-2. Run: `kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost`
-3. Open browser: http://localhost:9090
+2. Run: `kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost`
+3. Open browser: http://localhost:9091
 4. Wait ~25 minutes for initial data collection
 
 **Key Views:**
