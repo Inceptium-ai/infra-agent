@@ -6,52 +6,109 @@ This document provides URLs and access instructions for all infrastructure compo
 
 ## Environment Quick Reference
 
-| Component | DEV | TST | PRD |
-|-----------|-----|-----|-----|
-| Grafana | https://grafana.dev.infra-agent.internal | https://grafana.tst.infra-agent.internal | https://grafana.infra-agent.com |
-| Headlamp | https://headlamp.dev.infra-agent.internal | https://headlamp.tst.infra-agent.internal | https://headlamp.infra-agent.com |
-| API ALB | https://api.dev.infra-agent.internal | https://api.tst.infra-agent.internal | https://api.infra-agent.com |
+| Component | DEV Access | TST | PRD |
+|-----------|------------|-----|-----|
+| Grafana | `kubectl port-forward` → http://localhost:3000 | ALB (future) | ALB + MFA |
+| Headlamp | `kubectl port-forward` → http://localhost:8080 | ALB (future) | ALB + MFA |
+| Kubecost | `kubectl port-forward` → http://localhost:9090 | ALB (future) | ALB + MFA |
+| Loki | Internal only (via Grafana) | Same | Same |
+| Tempo | Internal only (via Grafana) | Same | Same |
 
 ---
 
-## Observability Stack (LGTM)
+## DEV Environment Access (SSM Tunnel Method)
 
-### Access Method: SSM Tunnel + Port Forward (DEV)
+For DEV environment, we use **SSM port forwarding** for maximum security - **no internet exposure**.
 
-For DEV environment, we use SSM port forwarding for maximum security - no internet exposure.
-
-**Prerequisites:**
-1. AWS CLI configured with appropriate credentials
-2. SSM Session Manager plugin installed
+### Prerequisites
+1. AWS CLI v2 configured with appropriate credentials
+2. [SSM Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed
 3. kubectl installed locally
 
-**Step 1: Start SSM Tunnel to EKS API**
+### Step 1: Start SSM Tunnel to EKS API
+
+**Keep this terminal open while working:**
 ```bash
-# Terminal 1 - Keep this running
 aws ssm start-session \
   --target i-06b868c656de96829 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters '{"host":["C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com"],"portNumber":["443"],"localPortNumber":["6443"]}'
 ```
 
-**Step 2: Configure kubectl (one-time)**
+### Step 2: Configure kubectl (one-time setup)
 ```bash
+# Get EKS config
 aws eks update-kubeconfig --name infra-agent-dev-cluster --region us-east-1
+
+# Point to localhost tunnel
 sed -i.bak 's|https://C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com|https://localhost:6443|' ~/.kube/config
+
+# Skip TLS verification (cert doesn't include localhost)
 kubectl config set-cluster arn:aws:eks:us-east-1:340752837296:cluster/infra-agent-dev-cluster --insecure-skip-tls-verify=true
 ```
 
-**Step 3: Port Forward to Services**
+### Step 3: Port Forward to Services
+
+Open separate terminals for each service you want to access:
+
 ```bash
-# Grafana (http://localhost:3000)
-kubectl port-forward svc/grafana 3000:3000 -n observability
+# Grafana (dashboards, logs, traces)
+kubectl port-forward svc/grafana 3000:80 -n observability
+# Access: http://localhost:3000
+# Credentials: admin / e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO
 
-# Loki (http://localhost:3100)
-kubectl port-forward svc/loki-gateway 3100:3100 -n observability
+# Headlamp (K8s admin console)
+kubectl port-forward svc/headlamp 8080:80 -n headlamp
+# Access: http://localhost:8080
+# Token: kubectl create token headlamp -n headlamp
 
-# Tempo (http://localhost:3200)
+# Kubecost (cost analysis)
+kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost
+# Access: http://localhost:9090
+
+# Loki API (usually accessed via Grafana)
+kubectl port-forward svc/loki-gateway 3100:80 -n observability
+
+# Tempo API (usually accessed via Grafana)
 kubectl port-forward svc/tempo 3200:3200 -n observability
 ```
+
+### Quick Access Script
+
+Save this as `~/bin/infra-agent-tunnel.sh`:
+```bash
+#!/bin/bash
+# Start SSM tunnel to EKS
+echo "Starting SSM tunnel to EKS API..."
+aws ssm start-session \
+  --target i-06b868c656de96829 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com"],"portNumber":["443"],"localPortNumber":["6443"]}'
+```
+
+### Multi-Service Port Forward Script
+
+Save this as `~/bin/infra-agent-services.sh`:
+```bash
+#!/bin/bash
+# Port forward all services (run after tunnel is established)
+echo "Port forwarding all services..."
+kubectl port-forward svc/grafana 3000:80 -n observability &
+kubectl port-forward svc/headlamp 8080:80 -n headlamp &
+kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost &
+echo ""
+echo "Services available at:"
+echo "  Grafana:  http://localhost:3000"
+echo "  Headlamp: http://localhost:8080"
+echo "  Kubecost: http://localhost:9090"
+echo ""
+echo "Press Ctrl+C to stop all port forwards"
+wait
+```
+
+---
+
+## Service Details
 
 ---
 
@@ -162,34 +219,27 @@ histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
 
 ## Kubernetes Admin Console (Headlamp)
 
-**Purpose:** Web-based Kubernetes management with AI chat integration
+**Purpose:** Web-based Kubernetes management
 
-| Environment | URL | Features |
-|-------------|-----|----------|
-| DEV | `https://headlamp.dev.infra-agent.internal` | Full admin access |
-| TST | `https://headlamp.tst.infra-agent.internal` | Read + limited write |
-| PRD | `https://headlamp.infra-agent.com` | Read-only + MFA for actions |
+| Environment | Access Method |
+|-------------|---------------|
+| DEV | `kubectl port-forward svc/headlamp 8080:80 -n headlamp` → http://localhost:8080 |
+| TST | ALB + Cognito (future) |
+| PRD | ALB + Cognito + MFA (future) |
 
 **Features:**
 - Cluster health overview
 - Node/pod management
 - Log viewing
 - Resource creation (DEV/TST only)
-- Integrated AI Chat (connects to Chat Agent)
+- YAML editor for resources
 
-**Access Instructions:**
-1. Navigate to Headlamp URL
-2. Authenticate via AWS SSO
-3. Select cluster from dropdown
-4. Use sidebar to navigate resources
-
-**AI Chat Integration:**
-- Click chat icon in bottom-right
-- Type natural language commands
-- Examples:
-  - "Show me pods with high CPU usage"
-  - "Deploy version 1.2.3 to this namespace"
-  - "What's the current drift status?"
+**Access Instructions (DEV):**
+1. Ensure SSM tunnel is running (Step 1 above)
+2. Run: `kubectl port-forward svc/headlamp 8080:80 -n headlamp`
+3. Generate auth token: `kubectl create token headlamp -n headlamp`
+4. Open browser: http://localhost:8080
+5. Paste the token to authenticate
 
 ---
 
@@ -393,19 +443,29 @@ infra-agent security report --namespace infra-agent
 
 ## Cost Management (Kubecost)
 
-### Dashboard
+**Purpose:** Kubernetes cost analysis and optimization
 
-| Environment | URL |
-|-------------|-----|
-| DEV | `https://kubecost.dev.infra-agent.internal` |
-| TST | `https://kubecost.tst.infra-agent.internal` |
-| PRD | `https://kubecost.infra-agent.com` |
+| Environment | Access Method |
+|-------------|---------------|
+| DEV | `kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost` → http://localhost:9090 |
+| TST | ALB (future) |
+| PRD | ALB + MFA (future) |
+
+**Access Instructions (DEV):**
+1. Ensure SSM tunnel is running (Step 1 above)
+2. Run: `kubectl port-forward svc/kubecost-cost-analyzer 9090:9090 -n kubecost`
+3. Open browser: http://localhost:9090
+4. Wait ~25 minutes for initial data collection
 
 **Key Views:**
 - Cost by Namespace
 - Cost by Deployment
 - Idle Resource Identification
 - Efficiency Recommendations
+
+**Why Kubecost vs AWS Cost Explorer:**
+- AWS Cost Explorer: Shows EC2/EBS costs (node-level)
+- Kubecost: Shows cost per pod/namespace/deployment (K8s workload level)
 
 ---
 

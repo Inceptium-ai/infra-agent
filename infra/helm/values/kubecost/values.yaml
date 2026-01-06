@@ -3,6 +3,9 @@
 
 # Global configuration
 global:
+  # Cluster ID (required)
+  clusterId: infra-agent-dev-cluster
+
   # Grafana integration (use existing Grafana)
   grafana:
     enabled: false

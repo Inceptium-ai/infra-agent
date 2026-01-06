@@ -878,3 +878,86 @@ helm install <release-name> <chart> -n <namespace> -f values.yaml
 
 **Lesson:**
 Use `--wait --timeout` carefully. If interrupted, check `helm history` and uninstall stuck releases before retrying.
+
+---
+
+## 27. Headlamp Requires Writable Filesystem
+
+**Error:**
+```
+{"level":"error","error":"mkdir /home/headlamp/.config: read-only file system","message":"creating plugins directory"}
+{"level":"error","error":"mkdir /tmp/.headlamp334353572: read-only file system","message":"Failed to create static dir"}
+```
+
+**Cause:**
+Setting `securityContext.readOnlyRootFilesystem: true` prevents Headlamp from creating its required temp and config directories.
+
+**Fix:**
+Disable read-only root filesystem for Headlamp:
+```yaml
+securityContext:
+  readOnlyRootFilesystem: false  # Headlamp needs /tmp and ~/.config writable
+  runAsNonRoot: true
+  runAsUser: 100
+  allowPrivilegeEscalation: false
+```
+
+**Lesson:**
+Not all applications support read-only root filesystem. Check application requirements before applying strict security contexts. Headlamp specifically needs `/tmp` and `/home/headlamp/.config` to be writable.
+
+---
+
+## 28. Kubecost 2.9.x Requires Migration Setup
+
+**Error:**
+```
+Error: execution error: Kubecost 2.9.x is only used for preparing agents to upgrade to 3.0.
+```
+
+**Cause:**
+Kubecost 2.9.x versions are transitional releases designed specifically for migrating to version 3.0. They're not meant for fresh installations.
+
+**Fix:**
+Use a stable 2.8.x version for fresh installations:
+```bash
+helm install kubecost kubecost/cost-analyzer -n kubecost \
+  --version 2.8.5 \
+  -f values.yaml
+```
+
+**Lesson:**
+Check Helm chart release notes before using latest version. Some versions are designed for specific upgrade paths only. For fresh installations, use the stable version (2.8.x in this case).
+
+---
+
+## 29. Velero CRD Job Timeout During Install
+
+**Error:**
+```
+Error: INSTALLATION FAILED: failed pre-install: resource not ready, name: velero-upgrade-crds, kind: Job, status: InProgress
+context deadline exceeded
+```
+
+**Cause:**
+Velero Helm chart runs a pre-install job to create/upgrade CRDs. If this job times out (image pull issues, slow cluster), the install fails but CRDs may already be installed.
+
+**Fix:**
+```bash
+# Check if CRDs are already installed
+kubectl get crds | grep velero.io
+
+# If CRDs exist, uninstall the stuck release
+helm uninstall velero -n velero
+
+# Delete any stuck jobs
+kubectl delete jobs -n velero --all
+
+# Reinstall with CRD upgrade disabled
+helm install velero vmware-tanzu/velero -n velero \
+  -f values.yaml \
+  --set upgradeCRDs=false \
+  --timeout 10m
+```
+
+**Lesson:**
+Velero CRD jobs can be slow. If CRDs are already present, use `--set upgradeCRDs=false` to skip the pre-install job.

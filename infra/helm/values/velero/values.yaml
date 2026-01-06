@@ -1,16 +1,16 @@
 # Velero Helm Values - Backup and Disaster Recovery
 # NIST CP-9: System Backup, CP-10: System Recovery
 
-# Image configuration
-image:
-  repository: velero/velero
-  tag: v1.15.0
-  pullPolicy: IfNotPresent
+# Image configuration (chart 11.3.1 uses default image v1.17.1)
+# image:
+#   repository: velero/velero
+#   tag: v1.17.1
+#   pullPolicy: IfNotPresent
 
-# Init containers for plugins
+# Init containers for plugins (compatible with Velero 1.17.x)
 initContainers:
   - name: velero-plugin-for-aws
-    image: velero/velero-plugin-for-aws:v1.11.0
+    image: velero/velero-plugin-for-aws:v1.12.0
     imagePullPolicy: IfNotPresent
     volumeMounts:
       - name: plugins

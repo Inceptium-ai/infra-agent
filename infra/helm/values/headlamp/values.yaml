@@ -1,144 +1,57 @@
 # Headlamp Helm Values - Kubernetes Admin Console
-# OSS Kubernetes Web UI with plugin support
+# NIST AC-2: Account Management (RBAC-based access)
 
-# Replica count
-replicaCount: 2
-
-# Image configuration
-image:
-  registry: ghcr.io
-  repository: headlamp-k8s/headlamp
-  tag: v0.26.0
-  pullPolicy: IfNotPresent
+# Resource limits
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
 
 # Service configuration
 service:
   type: ClusterIP
   port: 80
 
-# Ingress (will use Istio Gateway)
+# Ingress (disabled - use port-forward for dev)
 ingress:
   enabled: false
 
-# Resource limits
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
-
 # Configuration
 config:
-  # Base URL (will be set based on domain)
-  baseURL: ""
+  pluginsDir: /headlamp/plugins
 
-  # Enable in-cluster mode
-  inCluster: true
-
-  # OIDC configuration (optional - for SSO)
-  oidc:
-    enabled: false
-    # clientId: ""
-    # clientSecret: ""
-    # issuerUrl: ""
-    # scopes: ""
-
-  # Plugin configuration
-  plugins:
-    # Enable plugin catalog
-    catalog:
-      enabled: true
-      url: "https://headlamp-k8s.github.io/headlamp/plugins/"
-
-    # Enabled plugins list
-    enabled:
-      - "@headlamp-k8s/pod-metrics"
-      - "@headlamp-k8s/prometheus"
-
-# Persistence for plugins
-persistence:
-  enabled: true
-  size: 1Gi
-  storageClass: gp3
-  accessModes:
-    - ReadWriteOnce
-
-# Init containers for pre-installed plugins
-initContainers: []
+# RBAC - use existing cluster admin for dev
+clusterRoleBinding:
+  create: true
 
 # Service account
 serviceAccount:
   create: true
   name: headlamp
-  annotations: {}
 
-# RBAC - cluster-admin for full visibility
-clusterRoleBinding:
-  create: true
-  annotations: {}
-
-# Pod security context
+# Pod security (readOnlyRootFilesystem disabled - Headlamp needs writable /tmp)
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 100
-  runAsGroup: 101
   fsGroup: 101
 
-# Container security context
 securityContext:
+  readOnlyRootFilesystem: false  # Headlamp needs /tmp and ~/.config writable
+  runAsNonRoot: true
+  runAsUser: 100
   allowPrivilegeEscalation: false
   capabilities:
     drop:
       - ALL
-  readOnlyRootFilesystem: false
-
-# Pod affinity for HA
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: headlamp
-          topologyKey: kubernetes.io/hostname
-
-# Pod disruption budget
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
-
-# Tolerations
-tolerations: []
 
 # Node selector
 nodeSelector: {}
 
-# Environment variables
-env:
-  - name: HEADLAMP_CONFIG_CLUSTER_NAME
-    value: "infra-agent-dev-cluster"
+# Tolerations
+tolerations: []
 
-# Extra volumes for plugins
-extraVolumes: []
-
-# Extra volume mounts
-extraVolumeMounts: []
-
-# Liveness probe
-livenessProbe:
-  httpGet:
-    path: /
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-
-# Readiness probe
-readinessProbe:
-  httpGet:
-    path: /
-    port: http
-  initialDelaySeconds: 5
-  periodSeconds: 5
+# Affinity
+affinity: {}
