@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Loki S3 Storage and IRSA Role for Infrastructure Agent
+  NIST 800-53 R5 Controls:
+    - SC-28: Encryption at Rest (SSE-S3/KMS)
+    - SC-8: Encryption in Transit (HTTPS only)
+    - AU-9: Protection of Audit Information (versioning, lifecycle)
+    - AC-6: Least Privilege (scoped IRSA policy)
+    - CM-8: System Inventory (mandatory tags)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Deployment environment
+
+  OidcProviderArn:
+    Type: String
+    Description: ARN of the EKS OIDC provider for IRSA
+
+  OidcProviderUrl:
+    Type: String
+    Description: URL of the OIDC provider (without https://)
+
+  RetentionDays:
+    Type: Number
+    Default: 30
+    Description: Days to retain logs before transitioning to IA storage class
+    MinValue: 7
+    MaxValue: 365
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team responsible for these resources
+
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+    Description: Version of the IaC template
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Project Configuration
+        Parameters:
+          - ProjectName
+          - Environment
+          - Owner
+          - IaCVersion
+      - Label:
+          default: EKS OIDC Configuration
+        Parameters:
+          - OidcProviderArn
+          - OidcProviderUrl
+      - Label:
+          default: Storage Configuration
+        Parameters:
+          - RetentionDays
+
+Resources:
+  #############################################
+  # S3 Bucket for Loki Chunks and Index
+  # NIST SC-28: Encryption at Rest
+  # NIST AU-9: Protection of Audit Information
+  #############################################
+  LokiBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-loki-${AWS::AccountId}'
+      # SC-28: Server-side encryption
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      # AU-9: Versioning for data protection
+      VersioningConfiguration:
+        Status: Enabled
+      # SC-8: Block public access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # AU-9: Lifecycle rules for cost management
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: !Ref RetentionDays
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: AbortIncompleteMultipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      # CM-8: Mandatory tags
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-loki'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: SC-28_AU-9_SC-8
+        - Key: Purpose
+          Value: loki-log-storage
+
+  #############################################
+  # S3 Bucket Policy
+  # NIST SC-8: Enforce HTTPS only
+  # NIST AC-6: Least privilege access
+  #############################################
+  LokiBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LokiBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # SC-8: Deny non-HTTPS requests
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${LokiBucket.Arn}'
+              - !Sub '${LokiBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          # AC-6: Allow only Loki IRSA role
+          - Sid: AllowLokiRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LokiRole.Arn
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+            Resource:
+              - !Sub '${LokiBucket.Arn}'
+              - !Sub '${LokiBucket.Arn}/*'
+
+  #############################################
+  # IRSA Role for Loki
+  # NIST AC-6: Least Privilege
+  #############################################
+  LokiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-loki-role'
+      Description: IRSA role for Loki to access S3 storage
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:observability:loki",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OidcProviderArn
+            OidcUrl: !Ref OidcProviderUrl
+      # CM-8: Mandatory tags
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-loki-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: SecurityLevel
+          Value: internal
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+        - Key: NIST_Control
+          Value: AC-6
+
+  #############################################
+  # IAM Policy for Loki S3 Access
+  # NIST AC-6: Scoped to specific bucket only
+  #############################################
+  LokiPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-loki-s3-policy'
+      Roles:
+        - !Ref LokiRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LokiS3Access
+            Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:DeleteObject'
+            Resource: !Sub '${LokiBucket.Arn}/*'
+          - Sid: LokiS3List
+            Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+            Resource: !Sub '${LokiBucket.Arn}'
+
+Outputs:
+  LokiBucketName:
+    Description: Name of the S3 bucket for Loki storage
+    Value: !Ref LokiBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-loki-bucket-name'
+
+  LokiBucketArn:
+    Description: ARN of the S3 bucket for Loki storage
+    Value: !GetAtt LokiBucket.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-loki-bucket-arn'
+
+  LokiRoleArn:
+    Description: ARN of the IRSA role for Loki
+    Value: !GetAtt LokiRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-loki-role-arn'
+
+  LokiServiceAccount:
+    Description: Kubernetes service account annotation for Loki
+    Value: !Sub 'eks.amazonaws.com/role-arn: ${LokiRole.Arn}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-loki-sa-annotation'

@@ -3,13 +3,15 @@
 
 tempo:
   # Storage backend configuration
+  # NIST SC-28: Encryption at Rest, SC-8: Encryption in Transit
   storage:
     trace:
       backend: s3
       s3:
-        # Will be populated from environment
+        bucket: infra-agent-dev-tempo-340752837296
         region: us-east-1
-        # bucket will be set via --set flag during install
+        endpoint: s3.us-east-1.amazonaws.com
+        insecure: false
 
   # Receivers configuration
   receivers:
@@ -68,11 +70,12 @@ persistence:
   storageClass: gp3
 
 # Service account for IRSA
+# NIST AC-6: Least Privilege via IRSA role
 serviceAccount:
   create: true
   name: tempo
-  annotations: {}
-    # eks.amazonaws.com/role-arn will be added during deployment
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::340752837296:role/infra-agent-dev-tempo-role
 
 # Pod affinity for HA
 affinity:

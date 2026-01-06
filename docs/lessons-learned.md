@@ -636,3 +636,245 @@ Simply deploy nodes into the desired pod subnets. This is simpler, faster to dep
 
 **Lesson:**
 Don't reach for complex solutions (custom networking, ENIConfigs) when a simpler architecture (nodes in pod subnets) achieves the same goal.
+
+---
+
+## 20. Grafana Loki Helm Chart - Correct bucketNames Structure
+
+**Error:**
+```
+Error: execution error at (loki/templates/write/statefulset-write.yaml:50:28):
+Please define loki.storage.bucketNames.chunks
+```
+
+**Cause:**
+Placed `bucketNames` under `loki.storage.s3.bucketNames` instead of `loki.storage.bucketNames`.
+
+**Wrong Structure:**
+```yaml
+loki:
+  storage:
+    type: s3
+    s3:
+      region: us-east-1
+      bucketNames:        # WRONG - nested under s3
+        chunks: my-bucket
+        ruler: my-bucket
+```
+
+**Correct Structure:**
+```yaml
+loki:
+  storage:
+    type: s3
+    bucketNames:          # CORRECT - sibling to s3, not nested
+      chunks: my-bucket
+      ruler: my-bucket
+      admin: my-bucket
+    s3:
+      region: us-east-1
+      endpoint: null
+      secretAccessKey: null
+      accessKeyId: null
+```
+
+**Lesson:**
+Always check the official Helm chart values.yaml structure before configuring. Grafana Loki chart expects `bucketNames` at `loki.storage.bucketNames`, not nested under the storage backend configuration (`s3`, `gcs`, etc.).
+
+**Reference:**
+https://github.com/grafana/loki/blob/main/production/helm/loki/values.yaml
+
+---
+
+## 21. Loki Self-Monitoring Requires Grafana Agent Operator CRDs
+
+**Error:**
+```
+resource mapping not found for name: "loki" namespace: "observability" from "":
+no matches for kind "GrafanaAgent" in version "monitoring.grafana.com/v1alpha1"
+ensure CRDs are installed first
+```
+
+**Cause:**
+Loki's `monitoring.selfMonitoring.enabled: true` creates GrafanaAgent, LogsInstance, and PodLogs resources that require Grafana Agent Operator CRDs to be pre-installed.
+
+**Fix:**
+Either install Grafana Agent Operator CRDs first, or disable self-monitoring:
+```yaml
+monitoring:
+  selfMonitoring:
+    enabled: false  # Disable if not using Grafana Agent Operator
+    grafanaAgent:
+      installOperator: false
+  lokiCanary:
+    enabled: false  # Also uses GrafanaAgent CRDs
+```
+
+**Lesson:**
+When using Grafana Loki Helm chart, `selfMonitoring.enabled: true` requires Grafana Agent Operator. For simpler setups, disable self-monitoring and use Prometheus ServiceMonitors instead if metrics are needed.
+
+---
+
+## 22. Use Git as Source of Truth - Not S3 for Config Files
+
+**Bad Practice:**
+Using S3 to transfer Helm values or config files to bastion for deployment.
+
+```bash
+# DON'T do this - creates drift from source control
+aws s3 cp loki-values.yaml s3://bucket/config/
+# Then on bastion: aws s3 cp s3://bucket/config/loki-values.yaml .
+```
+
+**Problems:**
+- S3 is not version controlled
+- Creates configuration drift
+- Not auditable (who changed what, when)
+- Violates NIST CM-3 (Configuration Change Control)
+- Files can diverge from Git repo
+
+**Correct Approach:**
+Git repo is the single source of truth. Deploy from local workstation via SSM tunnel (see Lesson #23).
+
+**Lesson:**
+ALL IaC and configuration must live in Git. Never use S3, Secrets Manager, or other storage as a substitute for version-controlled configuration.
+
+---
+
+## 23. SSM Port Forwarding for Private EKS Access
+
+**Problem:**
+EKS cluster has private-only API endpoint (NIST SC-7 compliant). Need to run kubectl/helm from local workstation.
+
+**Solution:**
+Use SSM port forwarding to tunnel through bastion to EKS API.
+
+**Setup:**
+```bash
+# Terminal 1: Start tunnel (keep running)
+aws ssm start-session \
+  --target <bastion-instance-id> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<EKS-API-ENDPOINT>"],"portNumber":["443"],"localPortNumber":["6443"]}'
+
+# Terminal 2: Configure kubectl
+aws eks update-kubeconfig --name <cluster-name> --region us-east-1
+
+# Modify kubeconfig to use tunnel
+sed -i.bak 's|https://<EKS-API-ENDPOINT>|https://localhost:6443|' ~/.kube/config
+
+# Skip TLS verification (cert is for EKS hostname, not localhost)
+kubectl config set-cluster <cluster-arn> --insecure-skip-tls-verify=true
+
+# Test
+kubectl get nodes
+```
+
+**Benefits:**
+- No public EKS endpoint needed
+- All traffic encrypted through SSM
+- Audited via CloudTrail
+- Deploy directly from local Git repo
+- No config file transfers needed
+
+**For This Project:**
+```bash
+# Bastion ID: i-06b868c656de96829
+# EKS Endpoint: C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com
+# Cluster ARN: arn:aws:eks:us-east-1:340752837296:cluster/infra-agent-dev-cluster
+```
+
+**Lesson:**
+SSM port forwarding allows secure kubectl access to private EKS clusters without exposing the API endpoint to the internet.
+
+---
+
+## 24. Create GP3 StorageClass Before Deploying StatefulSets
+
+**Error:**
+```
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available:
+pod has unbound immediate PersistentVolumeClaims. not found
+```
+
+**Cause:**
+PVCs specify `storageClass: gp3` but only `gp2` StorageClass exists in EKS by default. EKS default `gp2` uses the deprecated `kubernetes.io/aws-ebs` provisioner.
+
+**Fix:**
+Create a `gp3` StorageClass using EBS CSI driver before deploying workloads:
+
+```yaml
+# infra/k8s/storage/gp3-storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"  # NIST SC-28
+```
+
+**Deploy order:**
+1. EBS CSI Driver add-on (CloudFormation)
+2. GP3 StorageClass (`kubectl apply -f`)
+3. Helm charts that use PVCs
+
+**Lesson:**
+Always create required StorageClasses before deploying StatefulSets. Add this to the deployment checklist.
+
+---
+
+## 25. PVCs Cannot Be Modified After Creation
+
+**Problem:**
+Created PVCs without specifying `storageClass` picked up no storage class (blank). Cannot modify PVCs to add storage class.
+
+**Fix:**
+Must delete PVCs and let StatefulSets recreate them:
+
+```bash
+# Delete PVCs
+kubectl delete pvc -n observability data-loki-backend-0 data-loki-backend-1
+
+# Delete StatefulSets (they'll be recreated by Helm)
+kubectl delete statefulset -n observability loki-backend loki-write
+
+# Helm upgrade recreates everything
+helm upgrade --install loki grafana/loki -n observability -f values.yaml
+```
+
+**Lesson:**
+PVCs are immutable once created. If wrong storage class is applied, must delete and recreate.
+
+---
+
+## 26. Helm "Another Operation in Progress" Error
+
+**Error:**
+```
+Error: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress
+```
+
+**Cause:**
+Previous Helm install was interrupted (timeout, Ctrl+C, terminal closed), leaving the release in `pending-install` state.
+
+**Fix:**
+```bash
+# Check release status
+helm history <release-name> -n <namespace>
+
+# Uninstall the stuck release
+helm uninstall <release-name> -n <namespace>
+
+# Fresh install
+helm install <release-name> <chart> -n <namespace> -f values.yaml
+```
+
+**Lesson:**
+Use `--wait --timeout` carefully. If interrupted, check `helm history` and uninstall stuck releases before retrying.

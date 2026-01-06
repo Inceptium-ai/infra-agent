@@ -122,8 +122,9 @@ affinity:
                 - arm64
 
 # Monitoring
+# Disabled - requires Prometheus Operator CRDs
 serviceMonitor:
-  enabled: true
+  enabled: false
   interval: 60s
   labels:
     release: prometheus

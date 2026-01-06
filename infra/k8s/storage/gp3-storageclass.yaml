@@ -1,0 +1,30 @@
+# GP3 StorageClass for EBS CSI Driver
+# NIST SC-28: Encryption at Rest (EBS encryption enabled)
+# NIST CM-8: System Inventory (standard storage class for all workloads)
+#
+# Usage: All PVCs should use storageClassName: gp3
+# Benefits over gp2:
+#   - 20% cheaper baseline
+#   - 3000 IOPS baseline (vs 100 IOPS/GB for gp2)
+#   - Independently scale IOPS and throughput
+#   - Encryption enabled by default
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/managed-by: infra-agent
+    nist-control: SC-28
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"
+  # Optional: specify KMS key for encryption
+  # kmsKeyId: alias/infra-agent-ebs-key

@@ -926,3 +926,193 @@ Failed Tests:
 Evidence Location: evidence/phase1-foundation/
 ============================================
 ```
+
+---
+
+## Phase 3: Helm Charts Deployment
+
+### Prerequisites
+- EKS cluster ACTIVE with nodes Ready
+- kubectl configured (via bastion or local)
+- Helm 3.x installed
+
+### Deployment Order
+
+Helm charts must be deployed in this order due to dependencies:
+
+```
+1. Istio Base        → CRDs for service mesh
+2. Istiod            → Control plane (depends on base)
+3. Istio Gateway     → Ingress gateway (depends on istiod)
+4. Loki              → Log aggregation
+5. Tempo             → Distributed tracing
+6. Mimir             → Metrics (optional, can use Prometheus)
+7. Grafana           → Dashboards (depends on Loki, Tempo)
+8. Trivy Operator    → Security scanning
+9. Velero            → Backups
+10. Kubecost         → Cost management
+11. Headlamp         → Admin console
+```
+
+### Helm Repository Setup
+
+```bash
+# Add required Helm repositories
+helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo add aqua https://aquasecurity.github.io/helm-charts
+helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts
+helm repo add kubecost https://kubecost.github.io/cost-analyzer
+helm repo add headlamp https://headlamp-k8s.github.io/headlamp
+helm repo update
+```
+
+### Namespace Creation
+
+```bash
+kubectl create namespace istio-system
+kubectl create namespace observability
+kubectl create namespace trivy-system
+kubectl create namespace velero
+kubectl create namespace kubecost
+kubectl create namespace headlamp
+```
+
+### 1. Istio Service Mesh
+
+```bash
+# Install Istio Base (CRDs)
+helm upgrade --install istio-base istio/base \
+  -n istio-system \
+  -f infra/helm/values/istio/base-values.yaml \
+  --wait
+
+# Install Istiod (Control Plane)
+helm upgrade --install istiod istio/istiod \
+  -n istio-system \
+  -f infra/helm/values/istio/istiod-values.yaml \
+  --wait
+
+# Install Istio Ingress Gateway
+helm upgrade --install istio-ingress istio/gateway \
+  -n istio-system \
+  -f infra/helm/values/istio/gateway-values.yaml \
+  --wait
+```
+
+### 2. LGTM Observability Stack
+
+```bash
+# Install Loki (Logs)
+helm upgrade --install loki grafana/loki \
+  -n observability \
+  -f infra/helm/values/lgtm/loki-values.yaml \
+  --wait
+
+# Install Tempo (Traces)
+helm upgrade --install tempo grafana/tempo \
+  -n observability \
+  -f infra/helm/values/lgtm/tempo-values.yaml \
+  --wait
+
+# Install Mimir (Metrics) - Optional
+helm upgrade --install mimir grafana/mimir-distributed \
+  -n observability \
+  -f infra/helm/values/lgtm/mimir-values.yaml \
+  --wait
+
+# Install Grafana (Dashboards)
+helm upgrade --install grafana grafana/grafana \
+  -n observability \
+  -f infra/helm/values/lgtm/grafana-values.yaml \
+  --wait
+```
+
+### 3. Security & Operations
+
+```bash
+# Trivy Operator (Security Scanning)
+helm upgrade --install trivy-operator aqua/trivy-operator \
+  -n trivy-system \
+  -f infra/helm/values/trivy-operator/values.yaml \
+  --wait
+
+# Velero (Backups)
+helm upgrade --install velero vmware-tanzu/velero \
+  -n velero \
+  -f infra/helm/values/velero/values.yaml \
+  --wait
+
+# Kubecost (Cost Management)
+helm upgrade --install kubecost kubecost/cost-analyzer \
+  -n kubecost \
+  -f infra/helm/values/kubecost/values.yaml \
+  --wait
+
+# Headlamp (Admin Console)
+helm upgrade --install headlamp headlamp/headlamp \
+  -n headlamp \
+  -f infra/helm/values/headlamp/values.yaml \
+  --wait
+```
+
+### Verification Commands
+
+```bash
+# Check all Helm releases
+helm list -A
+
+# Check Istio
+kubectl get pods -n istio-system
+istioctl analyze
+
+# Check Observability
+kubectl get pods -n observability
+kubectl get svc -n observability
+
+# Check Security
+kubectl get pods -n trivy-system
+kubectl get vulnerabilityreports -A
+
+# Check Operations
+kubectl get pods -n velero
+kubectl get pods -n kubecost
+kubectl get pods -n headlamp
+```
+
+### Access URLs (after ALB creation)
+
+| Service | URL Pattern | Notes |
+|---------|-------------|-------|
+| Grafana | `https://grafana.{domain}` | Default admin password in secret |
+| Headlamp | `https://headlamp.{domain}` | K8s admin console |
+| Kubecost | `https://kubecost.{domain}` | Cost dashboards |
+
+### Rollback Commands
+
+```bash
+# Rollback specific release
+helm rollback <release-name> <revision> -n <namespace>
+
+# Example: Rollback Grafana to previous version
+helm rollback grafana 1 -n observability
+
+# View release history
+helm history <release-name> -n <namespace>
+```
+
+### Uninstall Order (Reverse of Install)
+
+```bash
+helm uninstall headlamp -n headlamp
+helm uninstall kubecost -n kubecost
+helm uninstall velero -n velero
+helm uninstall trivy-operator -n trivy-system
+helm uninstall grafana -n observability
+helm uninstall mimir -n observability
+helm uninstall tempo -n observability
+helm uninstall loki -n observability
+helm uninstall istio-ingress -n istio-system
+helm uninstall istiod -n istio-system
+helm uninstall istio-base -n istio-system
+```

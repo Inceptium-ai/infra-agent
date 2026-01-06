@@ -17,13 +17,20 @@ loki:
           period: 24h
 
   # Storage configuration for AWS S3
+  # NIST SC-28: Encryption at Rest, SC-8: Encryption in Transit
   storage:
     type: s3
+    bucketNames:
+      chunks: infra-agent-dev-loki-340752837296
+      ruler: infra-agent-dev-loki-340752837296
+      admin: infra-agent-dev-loki-340752837296
     s3:
-      # Will be populated from environment
       region: us-east-1
-      # bucketnames will be set via --set flag during install
-      # bucketNames: infra-agent-dev-loki
+      endpoint: null
+      secretAccessKey: null
+      accessKeyId: null
+      s3ForcePathStyle: false
+      insecure: false
 
   # Ingester configuration
   ingester:
@@ -94,21 +101,23 @@ gateway:
     port: 3100
 
 # Monitoring
+# Disable selfMonitoring as it requires Grafana Agent Operator CRDs
 monitoring:
   selfMonitoring:
-    enabled: true
+    enabled: false
     grafanaAgent:
       installOperator: false
 
   lokiCanary:
-    enabled: true
+    enabled: false
 
 # Service account for IRSA
+# NIST AC-6: Least Privilege via IRSA role
 serviceAccount:
   create: true
   name: loki
-  annotations: {}
-    # eks.amazonaws.com/role-arn will be added during deployment
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::340752837296:role/infra-agent-dev-loki-role
 
 # Persistence
 persistence:

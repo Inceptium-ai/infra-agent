@@ -16,27 +16,69 @@ This document provides URLs and access instructions for all infrastructure compo
 
 ## Observability Stack (LGTM)
 
+### Access Method: SSM Tunnel + Port Forward (DEV)
+
+For DEV environment, we use SSM port forwarding for maximum security - no internet exposure.
+
+**Prerequisites:**
+1. AWS CLI configured with appropriate credentials
+2. SSM Session Manager plugin installed
+3. kubectl installed locally
+
+**Step 1: Start SSM Tunnel to EKS API**
+```bash
+# Terminal 1 - Keep this running
+aws ssm start-session \
+  --target i-06b868c656de96829 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com"],"portNumber":["443"],"localPortNumber":["6443"]}'
+```
+
+**Step 2: Configure kubectl (one-time)**
+```bash
+aws eks update-kubeconfig --name infra-agent-dev-cluster --region us-east-1
+sed -i.bak 's|https://C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com|https://localhost:6443|' ~/.kube/config
+kubectl config set-cluster arn:aws:eks:us-east-1:340752837296:cluster/infra-agent-dev-cluster --insecure-skip-tls-verify=true
+```
+
+**Step 3: Port Forward to Services**
+```bash
+# Grafana (http://localhost:3000)
+kubectl port-forward svc/grafana 3000:3000 -n observability
+
+# Loki (http://localhost:3100)
+kubectl port-forward svc/loki-gateway 3100:3100 -n observability
+
+# Tempo (http://localhost:3200)
+kubectl port-forward svc/tempo 3200:3200 -n observability
+```
+
+---
+
 ### Grafana Dashboard
 **Purpose:** Unified visualization for metrics, logs, and traces
 
-| Environment | URL | Access |
-|-------------|-----|--------|
-| DEV | `https://grafana.dev.infra-agent.internal` | SSO via AWS IAM Identity Center |
-| TST | `https://grafana.tst.infra-agent.internal` | SSO via AWS IAM Identity Center |
-| PRD | `https://grafana.infra-agent.com` | SSO via AWS IAM Identity Center + MFA |
+| Environment | Access Method | Port |
+|-------------|--------------|------|
+| DEV | `kubectl port-forward svc/grafana 3000:3000 -n observability` | 3000 |
+| TST | ALB + Cognito (future) | 443 |
+| PRD | ALB + Cognito + MFA (future) | 443 |
+
+**Credentials (DEV):**
+- Username: `admin`
+- Password: `e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO`
 
 **Pre-configured Dashboards:**
 - EKS Cluster Overview
 - Pod Resource Utilization
-- NIST Compliance Status
-- Cost Allocation by Namespace
 - Istio Service Mesh Metrics
+- Loki Logs Dashboard
 
-**Access Instructions:**
-1. Navigate to Grafana URL
-2. Click "Sign in with AWS SSO"
-3. Authenticate with your IAM Identity Center credentials
-4. For PRD: Complete MFA verification
+**Access Instructions (DEV):**
+1. Ensure SSM tunnel is running (Step 1 above)
+2. Run: `kubectl port-forward svc/grafana 3000:3000 -n observability`
+3. Open browser: http://localhost:3000
+4. Login with admin credentials above
 
 ---
 

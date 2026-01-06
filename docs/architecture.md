@@ -39,6 +39,30 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 3. **Zero Trust**: All network communication assumes hostile environment
 4. **Encryption Everywhere**: Data encrypted at rest (KMS) and in transit (mTLS/TLS)
 
+### Storage Assumptions
+1. **No Node-Local Storage**: Pods are ephemeral; node local storage MUST NOT be used for persistence
+2. **S3 for Object Storage**: Logs (Loki), traces (Tempo), backups (Velero) use S3 with IRSA authentication
+3. **EBS for Block Storage**: Stateful apps (Grafana, Kubecost) use gp3 PVCs - EBS volumes persist independently of pods/nodes
+4. **EBS is NOT Node-Local**: gp3 PVCs are AWS-managed block storage, not on node's disk; volumes survive node failures
+5. **EFS for Shared Access**: If multiple pods need ReadWriteMany access, use EFS (not currently required)
+6. **etcd for CRDs**: Lightweight data (Trivy reports) stored as Kubernetes CRDs in etcd
+
+**Storage Decision Matrix:**
+
+| Storage Type | Use Case | NIST Control | Addons Using |
+|--------------|----------|--------------|--------------|
+| **S3** | Object storage (logs, traces, backups) | SC-28, CP-9 | Loki, Tempo, Velero |
+| **EBS (gp3)** | Block storage (databases, stateful apps) | SC-28 | Grafana, Kubecost |
+| **etcd (CRDs)** | Kubernetes-native resources | CM-8 | Trivy Operator |
+| **EFS** | Shared file access (ReadWriteMany) | - | Not currently used |
+| **Node Local** | ❌ NEVER | - | ❌ Prohibited |
+
+**Why EBS (gp3) is Safe:**
+- Volumes are AWS-managed, NOT on node's ephemeral disk
+- If node dies, EBS volume persists and reattaches to new node
+- Data survives pod restarts, node failures, cluster upgrades
+- Encryption at rest via AWS KMS (NIST SC-28 compliant)
+
 ---
 
 ## Constraints
@@ -130,6 +154,265 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | click | CLI framework |
 | pydantic | Data validation |
 | pytest | Testing |
+
+---
+
+## Kubernetes Add-ons Detailed Specifications
+
+This section provides complete specifications for all Kubernetes add-ons deployed in the cluster.
+
+### EKS Managed Add-ons (via CloudFormation)
+
+| Add-on | Version | Description | NIST Controls |
+|--------|---------|-------------|---------------|
+| **VPC CNI** | v1.21.1 | AWS VPC networking for pods | SC-7 (Network isolation) |
+| **CoreDNS** | v1.12.4 | Kubernetes DNS service | SC-7 (Service discovery) |
+| **kube-proxy** | v1.34.1 | Network proxy for services | SC-7 (Network routing) |
+| **EBS CSI Driver** | v1.54.0 | Persistent volume provisioning | SC-28 (Storage encryption) |
+
+### Helm Chart Add-ons (Phase 3)
+
+#### 1. Istio Service Mesh
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `istio/base`, `istio/istiod`, `istio/gateway` |
+| **Namespace** | `istio-system` |
+| **Purpose** | mTLS encryption, traffic management, observability |
+| **NIST Controls** | SC-8 (Transmission confidentiality), AU-2 (Access logging) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| istiod | 1-2 | 200m | 512Mi | 15010 (gRPC), 15012 (Webhook), 15014 (Metrics) |
+| istio-ingress | 1-2 | 100m | 128Mi | 80, 443, 15021 (Health) |
+| Sidecar (per pod) | 1 | 100m | 128Mi | 15001 (Envoy), 15006 (Inbound), 15090 (Prometheus) |
+
+**Health Checks:**
+- Istiod: `GET /ready` on port 15021
+- Gateway: `GET /healthz/ready` on port 15021
+
+**Dependencies:** None (deploys first)
+
+---
+
+#### 2. Loki (Log Aggregation)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `grafana/loki` |
+| **Namespace** | `observability` |
+| **Purpose** | Centralized log storage and querying |
+| **NIST Controls** | AU-2 (Audit events), AU-9 (Audit protection), AU-11 (Retention) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| loki (SingleBinary) | 1 | 500m | 1Gi | 3100 (HTTP), 9095 (gRPC), 7946 (Memberlist) |
+
+**Storage:**
+| Type | Backend | Bucket/Path | Retention |
+|------|---------|-------------|-----------|
+| Chunks | S3 | `{project}-{env}-loki-{account}/chunks` | 30 days → IA |
+| Index | S3 | `{project}-{env}-loki-{account}/index` | 30 days → IA |
+
+**Health Checks:**
+- Readiness: `GET /ready` on port 3100
+- Liveness: `GET /loki/api/v1/status/buildinfo` on port 3100
+
+**Dependencies:** S3 bucket (CloudFormation), IRSA role
+
+---
+
+#### 3. Tempo (Distributed Tracing)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `grafana/tempo` |
+| **Namespace** | `observability` |
+| **Purpose** | Distributed trace collection and storage |
+| **NIST Controls** | AU-2 (Audit events), AU-12 (Audit generation) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| tempo | 1 | 250m | 512Mi | 3200 (HTTP), 9095 (gRPC), 4317 (OTLP gRPC), 4318 (OTLP HTTP), 9411 (Zipkin) |
+
+**Storage:**
+| Type | Backend | Retention |
+|------|---------|-----------|
+| Traces | S3 or local PVC | 7 days |
+
+**Health Checks:**
+- Readiness: `GET /ready` on port 3200
+- Liveness: `GET /status` on port 3200
+
+**Dependencies:** Optional S3 bucket for production
+
+---
+
+#### 4. Grafana (Dashboards)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `grafana/grafana` |
+| **Namespace** | `observability` |
+| **Purpose** | Unified visualization for logs, metrics, traces |
+| **NIST Controls** | AU-7 (Audit reduction), SI-4 (System monitoring) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| grafana | 1-2 | 250m | 512Mi | 3000 (HTTP) |
+
+**Data Sources (auto-configured):**
+| Source | URL | Type |
+|--------|-----|------|
+| Loki | `http://loki.observability:3100` | Logs |
+| Tempo | `http://tempo.observability:3200` | Traces |
+| Prometheus | `http://prometheus.observability:9090` | Metrics |
+
+**Health Checks:**
+- Readiness: `GET /api/health` on port 3000
+- Liveness: `GET /api/health` on port 3000
+
+**Dependencies:** Loki, Tempo (for data sources)
+
+---
+
+#### 5. Trivy Operator (Security Scanning)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `aqua/trivy-operator` |
+| **Namespace** | `trivy-system` |
+| **Purpose** | Continuous vulnerability scanning of container images |
+| **NIST Controls** | SI-2 (Flaw remediation), RA-5 (Vulnerability scanning), CM-8 (Inventory) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| trivy-operator | 1 | 100m | 256Mi | 8080 (Metrics), 9443 (Webhook) |
+
+**Scan Types:**
+| Type | CRD | Frequency |
+|------|-----|-----------|
+| Vulnerabilities | `VulnerabilityReport` | On image change |
+| ConfigAudit | `ConfigAuditReport` | On resource change |
+| RBAC | `RbacAssessmentReport` | Periodic |
+| Secrets | `ExposedSecretReport` | On image change |
+
+**Health Checks:**
+- Readiness: `GET /readyz` on port 9090
+- Liveness: `GET /healthz` on port 9090
+
+**Dependencies:** None
+
+---
+
+#### 6. Velero (Backup & Restore)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `vmware-tanzu/velero` |
+| **Namespace** | `velero` |
+| **Purpose** | Kubernetes backup, restore, and disaster recovery |
+| **NIST Controls** | CP-9 (Backup), CP-10 (Recovery), CP-6 (Alternate storage) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| velero | 1 | 100m | 256Mi | 8085 (Metrics) |
+| node-agent (per node) | 1 | 100m | 256Mi | N/A |
+
+**Storage:**
+| Type | Backend | Bucket |
+|------|---------|--------|
+| Backups | S3 | `{project}-{env}-velero-backups` |
+| Volume Snapshots | EBS Snapshots | AWS-managed |
+
+**Backup Schedule:**
+| Schedule | Retention | Scope |
+|----------|-----------|-------|
+| Daily (2am UTC) | 7 days | All namespaces |
+| Weekly (Sunday) | 30 days | All namespaces |
+
+**Health Checks:**
+- Readiness: `GET /metrics` on port 8085
+
+**Dependencies:** S3 bucket (CloudFormation), IRSA role
+
+---
+
+#### 7. Kubecost (Cost Management)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `kubecost/cost-analyzer` |
+| **Namespace** | `kubecost` |
+| **Purpose** | Kubernetes cost monitoring and optimization |
+| **NIST Controls** | PM-3 (Resource management) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| cost-model | 1 | 200m | 512Mi | 9003 (API), 9090 (Prometheus) |
+| frontend | 1 | 50m | 128Mi | 9090 (UI) |
+
+**Features:**
+- Real-time cost allocation by namespace, deployment, pod
+- Cost anomaly detection
+- Right-sizing recommendations
+- Idle resource detection (72hr threshold)
+
+**Health Checks:**
+- Readiness: `GET /healthz` on port 9003
+
+**Dependencies:** Prometheus metrics
+
+---
+
+#### 8. Headlamp (Admin Console)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `headlamp/headlamp` |
+| **Namespace** | `headlamp` |
+| **Purpose** | Kubernetes web UI for cluster management |
+| **NIST Controls** | AC-2 (Account management UI), AU-6 (Audit review) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| headlamp | 1 | 100m | 128Mi | 4466 (HTTP) |
+
+**Features:**
+- Cluster overview and health
+- Pod/Deployment management
+- Log viewing
+- RBAC visualization
+- Plugin support
+
+**Health Checks:**
+- Readiness: `GET /` on port 4466
+
+**Dependencies:** None
+
+---
+
+### Add-on Port Summary
+
+| Service | Namespace | Service Port | Target Port | Protocol |
+|---------|-----------|--------------|-------------|----------|
+| istiod | istio-system | 15010, 15012, 443 | 15010, 15012, 15017 | gRPC, HTTPS |
+| istio-ingress | istio-system | 80, 443 | 8080, 8443 | HTTP, HTTPS |
+| loki | observability | 3100 | 3100 | HTTP |
+| tempo | observability | 3200, 4317, 9411 | 3200, 4317, 9411 | HTTP, gRPC |
+| grafana | observability | 3000 | 3000 | HTTP |
+| trivy-operator | trivy-system | 8080 | 8080 | HTTP |
+| velero | velero | 8085 | 8085 | HTTP |
+| kubecost | kubecost | 9090 | 9090 | HTTP |
+| headlamp | headlamp | 4466 | 4466 | HTTP |
 
 ---
 

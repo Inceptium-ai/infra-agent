@@ -31,17 +31,10 @@ configuration:
   backupStorageLocation:
     - name: default
       provider: aws
-      bucket: ""  # Will be set via --set flag
+      bucket: infra-agent-dev-velero-340752837296
       prefix: velero
       config:
         region: us-east-1
-        # Cross-region backup location
-    - name: dr
-      provider: aws
-      bucket: ""  # Will be set via --set flag for DR bucket
-      prefix: velero-dr
-      config:
-        region: us-west-2
 
   # Volume snapshot location
   volumeSnapshotLocation:
@@ -49,10 +42,6 @@ configuration:
       provider: aws
       config:
         region: us-east-1
-    - name: dr
-      provider: aws
-      config:
-        region: us-west-2
 
   # Default volumes to fs-backup
   defaultVolumesToFsBackup: true
@@ -76,21 +65,18 @@ configuration:
     - pods
 
 # Credentials configuration
+# Using IRSA - no static credentials needed
 credentials:
-  useSecret: true
-  secretContents:
-    cloud: |
-      [default]
-      aws_access_key_id=${AWS_ACCESS_KEY_ID}
-      aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}
+  useSecret: false
 
 # Service account for IRSA
+# NIST AC-6: Least Privilege via IRSA role
 serviceAccount:
   server:
     create: true
     name: velero
-    annotations: {}
-      # eks.amazonaws.com/role-arn will be added during deployment
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::340752837296:role/infra-agent-dev-velero-role
 
 # Deploy node-agent for file system backups
 deployNodeAgent: true
@@ -137,25 +123,25 @@ schedules:
       includeClusterResources: true
       storageLocation: default
 
-  # Cross-region DR backup
-  dr-backup:
-    disabled: false
-    schedule: "0 4 * * *"  # 4 AM UTC daily
-    template:
-      ttl: 336h  # 14 days
-      includedNamespaces:
-        - "*"
-      excludedNamespaces:
-        - kube-system
-        - velero
-      includeClusterResources: true
-      storageLocation: dr
+  # Cross-region DR backup (disabled - no DR bucket configured)
+  # dr-backup:
+  #   disabled: false
+  #   schedule: "0 4 * * *"
+  #   template:
+  #     ttl: 336h
+  #     includedNamespaces:
+  #       - "*"
+  #     excludedNamespaces:
+  #       - kube-system
+  #       - velero
+  #     includeClusterResources: true
+  #     storageLocation: dr
 
 # Metrics
 metrics:
   enabled: true
   serviceMonitor:
-    enabled: true
+    enabled: false  # Disabled - requires Prometheus Operator CRDs
     additionalLabels:
       release: prometheus
 

@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Velero S3 Storage and IRSA Role for Infrastructure Agent
+  NIST 800-53 R5 Controls:
+    - CP-9: System Backup
+    - SC-28: Encryption at Rest (SSE-S3/KMS)
+    - AC-6: Least Privilege (scoped IRSA policy)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+  Environment:
+    Type: String
+    Default: dev
+  OidcProviderArn:
+    Type: String
+  OidcProviderUrl:
+    Type: String
+  Owner:
+    Type: String
+    Default: platform-team
+  IaCVersion:
+    Type: String
+    Default: '1.0.0'
+
+Resources:
+  VeleroBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-velero-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-velero'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: NIST_Control
+          Value: CP-9_SC-28
+        - Key: Purpose
+          Value: velero-backup-storage
+
+  VeleroBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VeleroBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${VeleroBucket.Arn}'
+              - !Sub '${VeleroBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          - Sid: AllowVeleroRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt VeleroRole.Arn
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+            Resource:
+              - !Sub '${VeleroBucket.Arn}'
+              - !Sub '${VeleroBucket.Arn}/*'
+
+  VeleroRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-velero-role'
+      Description: IRSA role for Velero backups
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:velero:velero",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OidcProviderArn
+            OidcUrl: !Ref OidcProviderUrl
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-velero-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: NIST_Control
+          Value: AC-6
+
+  VeleroPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-velero-policy'
+      Roles:
+        - !Ref VeleroRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: VeleroS3Access
+            Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+            Resource:
+              - !Sub '${VeleroBucket.Arn}'
+              - !Sub '${VeleroBucket.Arn}/*'
+          - Sid: VeleroEC2Access
+            Effect: Allow
+            Action:
+              - 'ec2:DescribeVolumes'
+              - 'ec2:DescribeSnapshots'
+              - 'ec2:CreateTags'
+              - 'ec2:CreateVolume'
+              - 'ec2:CreateSnapshot'
+              - 'ec2:DeleteSnapshot'
+            Resource: '*'
+
+Outputs:
+  VeleroBucketName:
+    Value: !Ref VeleroBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-velero-bucket-name'
+  VeleroRoleArn:
+    Value: !GetAtt VeleroRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-velero-role-arn'
