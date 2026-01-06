@@ -237,9 +237,17 @@ histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
 **Access Instructions (DEV):**
 1. Ensure SSM tunnel is running (Step 1 above)
 2. Run: `kubectl port-forward svc/headlamp 8080:80 -n headlamp`
-3. Generate auth token: `kubectl create token headlamp -n headlamp`
-4. Open browser: http://localhost:8080
-5. Paste the token to authenticate
+3. Open browser: http://localhost:8080
+4. Generate auth token and copy it:
+   ```bash
+   kubectl create token headlamp -n headlamp
+   ```
+5. Paste the token into Headlamp login screen
+
+**Token Notes:**
+- Default token expires in **1 hour**
+- Generate a new token anytime by running the command above
+- For longer-lived token (8 hours): `kubectl create token headlamp -n headlamp --duration=8h`
 
 ---
 
