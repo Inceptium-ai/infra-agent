@@ -1,198 +1,41 @@
-# Mimir Helm Values - Metrics Storage (Prometheus-compatible)
+# Mimir Helm Values - Metrics Storage
 # NIST AU-2: Audit Events (metrics collection)
 
-# Global configuration
-global:
-  extraEnvFrom:
-    - secretRef:
-        name: mimir-s3-credentials
-        optional: true
-
-# Mimir configuration
+# Deployment mode: distributed for production
 mimir:
-  # Structured configuration
+  # Structured config
   structuredConfig:
-    # Multi-tenancy disabled for simplicity
-    multitenancy_enabled: false
+    common:
+      storage:
+        backend: s3
+        s3:
+          bucket_name: infra-agent-dev-mimir-340752837296
+          endpoint: s3.us-east-1.amazonaws.com
+          region: us-east-1
 
-    # Limits configuration
-    limits:
-      max_global_series_per_user: 1500000
-      max_global_series_per_metric: 50000
-      ingestion_rate: 100000
-      ingestion_burst_size: 200000
-
-    # Block storage configuration
     blocks_storage:
       backend: s3
       s3:
-        # Will be populated from environment
-        region: us-east-1
-        # bucket_name will be set via --set flag
+        bucket_name: infra-agent-dev-mimir-340752837296
 
-      tsdb:
-        dir: /data/tsdb
-
-      bucket_store:
-        sync_dir: /data/tsdb-sync
-
-    # Ruler storage
     ruler_storage:
       backend: s3
       s3:
-        region: us-east-1
+        bucket_name: infra-agent-dev-mimir-340752837296
 
-    # Alertmanager storage
     alertmanager_storage:
       backend: s3
       s3:
-        region: us-east-1
-
-    # Server configuration
-    server:
-      http_listen_port: 8080
-      grpc_listen_port: 9095
-
-    # Distributor configuration
-    distributor:
-      ring:
-        kvstore:
-          store: memberlist
-
-    # Ingester configuration
-    ingester:
-      ring:
-        kvstore:
-          store: memberlist
-        replication_factor: 3
-
-    # Store gateway configuration
-    store_gateway:
-      sharding_ring:
-        kvstore:
-          store: memberlist
-
-    # Compactor configuration
-    compactor:
-      data_dir: /data/compactor
-      sharding_ring:
-        kvstore:
-          store: memberlist
-
-# Component replicas
-distributor:
-  replicas: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-ingester:
-  replicas: 3
-  resources:
-    requests:
-      cpu: 100m
-      memory: 512Mi
-    limits:
-      cpu: 1000m
-      memory: 2Gi
-  persistentVolume:
-    enabled: true
-    size: 20Gi
-    storageClass: gp3
-  zoneAwareReplication:
-    enabled: true
-
-querier:
-  replicas: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
-
-query_frontend:
-  replicas: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-store_gateway:
-  replicas: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
-  persistentVolume:
-    enabled: true
-    size: 10Gi
-    storageClass: gp3
-
-compactor:
-  replicas: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
-  persistentVolume:
-    enabled: true
-    size: 20Gi
-    storageClass: gp3
-
-ruler:
-  enabled: true
-  replicas: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-alertmanager:
-  enabled: true
-  replicas: 2
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
-  persistentVolume:
-    enabled: true
-    size: 1Gi
-    storageClass: gp3
+        bucket_name: infra-agent-dev-mimir-340752837296
 
 # Service account for IRSA
 serviceAccount:
   create: true
   name: mimir
-  annotations: {}
-    # eks.amazonaws.com/role-arn will be added during deployment
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::340752837296:role/infra-agent-dev-mimir-role
 
-# Memberlist configuration
-memberlist:
-  service:
-    publishNotReadyAddresses: true
-
-# NGINX gateway
+# Gateway (nginx) for routing
 nginx:
   enabled: true
   replicas: 2
@@ -203,3 +46,108 @@ nginx:
     limits:
       cpu: 200m
       memory: 256Mi
+
+# Distributor - receives metrics
+distributor:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Ingester - writes to storage
+ingester:
+  replicas: 2
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# Querier - reads from storage
+querier:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Query frontend
+query_frontend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Store gateway - reads blocks from S3
+store_gateway:
+  replicas: 1
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Compactor - compacts blocks
+compactor:
+  replicas: 1
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Ruler (for alerting rules)
+ruler:
+  enabled: false  # Enable later if needed
+
+# Alertmanager
+alertmanager:
+  enabled: false  # Enable later if needed
+
+# Disable minio (using S3)
+minio:
+  enabled: false
+
+# Monitoring
+metaMonitoring:
+  serviceMonitor:
+    enabled: false  # Requires Prometheus Operator CRDs
+
+# Results cache
+results_cache:
+  enabled: true
+  allocatedMemory: 512
+
+# Chunks cache
+chunks_cache:
+  enabled: true
+  allocatedMemory: 512

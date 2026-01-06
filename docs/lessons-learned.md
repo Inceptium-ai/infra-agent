@@ -961,3 +961,63 @@ helm install velero vmware-tanzu/velero -n velero \
 
 **Lesson:**
 Velero CRD jobs can be slow. If CRDs are already present, use `--set upgradeCRDs=false` to skip the pre-install job.
+
+---
+
+## 30. Always Run cfn-lint Before Deploying CloudFormation
+
+**Issue:**
+CloudFormation templates were deployed without validation, leading to potential issues with unused parameters, missing tags, and security misconfigurations.
+
+**Fix:**
+Always run cfn-lint on all CloudFormation templates before deployment:
+```bash
+# Install cfn-lint
+pip3 install cfn-lint
+
+# Run on all templates
+cfn-lint infra/cloudformation/stacks/**/*.yaml
+```
+
+**Add to CI/CD:**
+```yaml
+# .github/workflows/validate-iac.yaml
+- name: Validate CloudFormation
+  run: cfn-lint infra/cloudformation/stacks/**/*.yaml
+```
+
+**Lesson:**
+Make cfn-lint a mandatory step in the deployment process. Add to pre-commit hooks or CI pipeline.
+
+---
+
+## 31. Mimir Was Missing from LGTM Stack
+
+**Issue:**
+Deployed Grafana, Loki, and Tempo but forgot Mimir (metrics). This caused:
+- Grafana dashboards not working (no metrics)
+- "No data" in all metric panels
+- Tempo service maps unavailable
+
+**Root Cause:**
+The plan mentioned "LGTM stack" (Loki, Grafana, Tempo, Mimir) but Mimir was not included in the initial deployment.
+
+**Fix:**
+1. Create S3 bucket + IRSA role via CloudFormation (mimir-storage.yaml)
+2. Deploy Mimir via Helm with S3 backend
+3. Grafana datasources already configured for `mimir-nginx.observability.svc`
+
+**LGTM Stack Components:**
+| Component | Purpose | Storage |
+|-----------|---------|---------|
+| **L**oki | Logs | S3 |
+| **G**rafana | Dashboards | EBS (PVC) |
+| **T**empo | Traces | S3 |
+| **M**imir | Metrics | S3 |
+
+**Lesson:**
+When deploying the LGTM stack, always verify ALL four components are included. Use a checklist:
+- [ ] Loki (logs)
+- [ ] Grafana (dashboards)
+- [ ] Tempo (traces)
+- [ ] Mimir (metrics) ← Easy to forget!

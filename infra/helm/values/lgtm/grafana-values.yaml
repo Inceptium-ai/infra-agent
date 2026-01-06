@@ -112,7 +112,7 @@ datasources:
       - name: Mimir
         type: prometheus
         access: proxy
-        url: http://mimir-nginx.observability.svc.cluster.local:80/prometheus
+        url: http://mimir-gateway.observability.svc.cluster.local:80/prometheus
         isDefault: true
         jsonData:
           timeInterval: 15s

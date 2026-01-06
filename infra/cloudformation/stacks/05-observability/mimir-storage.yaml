@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  Velero S3 Storage and IRSA Role for Infrastructure Agent
+  Mimir S3 Storage and IRSA Role for Infrastructure Agent
   NIST 800-53 R5 Controls:
-    - CP-9: System Backup
-    - SC-28: Encryption at Rest (SSE-S3/KMS)
+    - SC-28: Encryption at Rest (SSE-S3)
+    - SC-8: Encryption in Transit (HTTPS only)
+    - AU-9: Protection of Audit Information (versioning)
     - AC-6: Least Privilege (scoped IRSA policy)
 
 Parameters:
@@ -12,11 +13,17 @@ Parameters:
     Default: infra-agent
   Environment:
     Type: String
+    AllowedValues: [dev, tst, prd]
     Default: dev
   OidcProviderArn:
     Type: String
+    Description: ARN of the EKS OIDC provider for IRSA
   OidcProviderUrl:
     Type: String
+    Description: URL of the OIDC provider (without https://)
+  RetentionDays:
+    Type: Number
+    Default: 30
   Owner:
     Type: String
     Default: platform-team
@@ -25,12 +32,12 @@ Parameters:
     Default: '1.0.0'
 
 Resources:
-  VeleroBucket:
+  MimirBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub '${ProjectName}-${Environment}-velero-${AWS::AccountId}'
+      BucketName: !Sub '${ProjectName}-${Environment}-mimir-${AWS::AccountId}'
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -49,14 +56,14 @@ Resources:
             Status: Enabled
             Transitions:
               - StorageClass: STANDARD_IA
-                TransitionInDays: 30
+                TransitionInDays: !Ref RetentionDays
           - Id: ExpireOldVersions
             Status: Enabled
             NoncurrentVersionExpiration:
               NoncurrentDays: 90
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-velero'
+          Value: !Sub '${ProjectName}-${Environment}-mimir'
         - Key: Environment
           Value: !Ref Environment
         - Key: Owner
@@ -64,14 +71,14 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
         - Key: NIST_Control
-          Value: CP-9_SC-28
+          Value: SC-28_AU-9
         - Key: Purpose
-          Value: velero-backup-storage
+          Value: mimir-metrics-storage
 
-  VeleroBucketPolicy:
+  MimirBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref VeleroBucket
+      Bucket: !Ref MimirBucket
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -80,15 +87,15 @@ Resources:
             Principal: '*'
             Action: 's3:*'
             Resource:
-              - !Sub '${VeleroBucket.Arn}'
-              - !Sub '${VeleroBucket.Arn}/*'
+              - !Sub '${MimirBucket.Arn}'
+              - !Sub '${MimirBucket.Arn}/*'
             Condition:
               Bool:
                 'aws:SecureTransport': 'false'
-          - Sid: AllowVeleroRole
+          - Sid: AllowMimirRole
             Effect: Allow
             Principal:
-              AWS: !GetAtt VeleroRole.Arn
+              AWS: !GetAtt MimirRole.Arn
             Action:
               - 's3:PutObject'
               - 's3:GetObject'
@@ -96,14 +103,14 @@ Resources:
               - 's3:ListBucket'
               - 's3:GetBucketLocation'
             Resource:
-              - !Sub '${VeleroBucket.Arn}'
-              - !Sub '${VeleroBucket.Arn}/*'
+              - !Sub '${MimirBucket.Arn}'
+              - !Sub '${MimirBucket.Arn}/*'
 
-  VeleroRole:
+  MimirRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${ProjectName}-${Environment}-velero-role'
-      Description: IRSA role for Velero backups
+      RoleName: !Sub '${ProjectName}-${Environment}-mimir-role'
+      Description: IRSA role for Mimir to access S3 storage
       AssumeRolePolicyDocument:
         Fn::Sub:
           - |
@@ -118,7 +125,7 @@ Resources:
                   "Action": "sts:AssumeRoleWithWebIdentity",
                   "Condition": {
                     "StringEquals": {
-                      "${OidcUrl}:sub": "system:serviceaccount:velero:velero",
+                      "${OidcUrl}:sub": "system:serviceaccount:observability:mimir",
                       "${OidcUrl}:aud": "sts.amazonaws.com"
                     }
                   }
@@ -129,49 +136,45 @@ Resources:
             OidcUrl: !Ref OidcProviderUrl
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-velero-role'
+          Value: !Sub '${ProjectName}-${Environment}-mimir-role'
         - Key: Environment
           Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
         - Key: NIST_Control
           Value: AC-6
 
-  VeleroPolicy:
+  MimirPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: !Sub '${ProjectName}-${Environment}-velero-policy'
+      PolicyName: !Sub '${ProjectName}-${Environment}-mimir-s3-policy'
       Roles:
-        - !Ref VeleroRole
+        - !Ref MimirRole
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: VeleroS3Access
+          - Sid: MimirS3Access
             Effect: Allow
             Action:
               - 's3:PutObject'
               - 's3:GetObject'
               - 's3:DeleteObject'
-              - 's3:ListBucket'
-              - 's3:GetBucketLocation'
-            Resource:
-              - !Sub '${VeleroBucket.Arn}'
-              - !Sub '${VeleroBucket.Arn}/*'
-          - Sid: VeleroEC2Access
+            Resource: !Sub '${MimirBucket.Arn}/*'
+          - Sid: MimirS3List
             Effect: Allow
             Action:
-              - 'ec2:DescribeVolumes'
-              - 'ec2:DescribeSnapshots'
-              - 'ec2:CreateTags'
-              - 'ec2:CreateVolume'
-              - 'ec2:CreateSnapshot'
-              - 'ec2:DeleteSnapshot'
-            Resource: '*'
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+            Resource: !Sub '${MimirBucket.Arn}'
 
 Outputs:
-  VeleroBucketName:
-    Value: !Ref VeleroBucket
+  MimirBucketName:
+    Value: !Ref MimirBucket
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-velero-bucket-name'
-  VeleroRoleArn:
-    Value: !GetAtt VeleroRole.Arn
+      Name: !Sub '${ProjectName}-${Environment}-mimir-bucket-name'
+  MimirRoleArn:
+    Value: !GetAtt MimirRole.Arn
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-velero-role-arn'
+      Name: !Sub '${ProjectName}-${Environment}-mimir-role-arn'
