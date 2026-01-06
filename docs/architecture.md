@@ -134,8 +134,9 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | Istio | 1.24+ | Service mesh, mTLS |
 | Loki | 3.x | Log aggregation |
 | Grafana | 11.x | Visualization |
-| Tempo | 2.x | Distributed tracing |
-| Mimir | 2.x | Metrics storage |
+| Prometheus | 2.x | Metrics scraping |
+| Mimir | 2.x | Metrics long-term storage (S3-backed) |
+| Kiali | 2.x | Service mesh traffic visualization |
 | Trivy | 0.58+ | Vulnerability scanning |
 | Trivy Operator | 0.24+ | In-cluster scanning |
 | Velero | 1.15+ | Backup/restore |
@@ -224,30 +225,60 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 
 ---
 
-#### 3. Tempo (Distributed Tracing)
+#### 3. Prometheus (Metrics Scraping)
 
 | Property | Value |
 |----------|-------|
-| **Chart** | `grafana/tempo` |
+| **Chart** | `prometheus-community/prometheus` |
 | **Namespace** | `observability` |
-| **Purpose** | Distributed trace collection and storage |
-| **NIST Controls** | AU-2 (Audit events), AU-12 (Audit generation) |
+| **Purpose** | Scrape Kubernetes/Istio metrics and push to Mimir |
+| **NIST Controls** | AU-2 (Audit events), SI-4 (System monitoring) |
 
 **Components:**
 | Component | Replicas | CPU Request | Memory Request | Ports |
 |-----------|----------|-------------|----------------|-------|
-| tempo | 1 | 250m | 512Mi | 3200 (HTTP), 9095 (gRPC), 4317 (OTLP gRPC), 4318 (OTLP HTTP), 9411 (Zipkin) |
+| prometheus-server | 1 | 100m | 512Mi | 80 (HTTP) |
+| node-exporter | 1 per node | 10m | 32Mi | 9100 (Metrics) |
+| kube-state-metrics | 1 | 10m | 64Mi | 8080 (Metrics) |
 
-**Storage:**
-| Type | Backend | Retention |
-|------|---------|-----------|
-| Traces | S3 or local PVC | 7 days |
+**Data Flow:**
+```
+[Kubernetes Pods/Nodes] → [Prometheus SCRAPES] → [Remote Write] → [Mimir STORES]
+```
 
 **Health Checks:**
-- Readiness: `GET /ready` on port 3200
-- Liveness: `GET /status` on port 3200
+- Readiness: `GET /-/ready` on port 9090
+- Liveness: `GET /-/healthy` on port 9090
 
-**Dependencies:** Optional S3 bucket for production
+**Dependencies:** Mimir (remote write target)
+
+---
+
+#### 3b. Kiali (Service Mesh Visualization)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `kiali/kiali-operator` |
+| **Namespace** | `istio-system` |
+| **Purpose** | Real-time traffic flow visualization for Istio service mesh |
+| **NIST Controls** | AU-6 (Audit review), SI-4 (System monitoring) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| kiali | 1 | 50m | 128Mi | 20001 (HTTP) |
+
+**Features:**
+- Real-time traffic flow graph between services
+- Request rates, error rates, latency visualization
+- Service dependency topology
+- Istio configuration validation
+- Traffic animation
+
+**Health Checks:**
+- Readiness: `GET /healthz` on port 20001
+
+**Dependencies:** Istio, Prometheus
 
 ---
 
@@ -268,15 +299,15 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 **Data Sources (auto-configured):**
 | Source | URL | Type |
 |--------|-----|------|
-| Loki | `http://loki.observability:3100` | Logs |
-| Tempo | `http://tempo.observability:3200` | Traces |
-| Prometheus | `http://prometheus.observability:9090` | Metrics |
+| Loki | `http://loki-gateway.observability:3100` | Logs |
+| Mimir | `http://mimir-gateway.observability:80/prometheus` | Metrics (long-term) |
+| Prometheus | `http://prometheus-server.observability:80` | Metrics (real-time) |
 
 **Health Checks:**
 - Readiness: `GET /api/health` on port 3000
 - Liveness: `GET /api/health` on port 3000
 
-**Dependencies:** Loki, Tempo (for data sources)
+**Dependencies:** Loki, Mimir, Prometheus (for data sources)
 
 ---
 
@@ -406,8 +437,10 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 |---------|-----------|--------------|-------------|----------|
 | istiod | istio-system | 15010, 15012, 443 | 15010, 15012, 15017 | gRPC, HTTPS |
 | istio-ingress | istio-system | 80, 443 | 8080, 8443 | HTTP, HTTPS |
-| loki | observability | 3100 | 3100 | HTTP |
-| tempo | observability | 3200, 4317, 9411 | 3200, 4317, 9411 | HTTP, gRPC |
+| kiali | istio-system | 20001 | 20001 | HTTP |
+| loki-gateway | observability | 3100 | 3100 | HTTP |
+| mimir-gateway | observability | 80 | 80 | HTTP |
+| prometheus-server | observability | 80 | 9090 | HTTP |
 | grafana | observability | 3000 | 3000 | HTTP |
 | trivy-operator | trivy-system | 8080 | 8080 | HTTP |
 | velero | velero | 8085 | 8085 | HTTP |
@@ -426,11 +459,12 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 | istiod | 500m | 2Gi | 2 | 1000m | 4Gi |
 | istio-ingressgateway | 100m | 128Mi | 2 | 200m | 256Mi |
 | istio sidecars (per pod) | 100m | 128Mi | ~20 | 2000m | 2.5Gi |
-| **Observability (LGTM)** |
+| **Observability (LGMP + Kiali)** |
 | Loki | 500m | 1Gi | 3 | 1500m | 3Gi |
 | Grafana | 250m | 512Mi | 2 | 500m | 1Gi |
-| Tempo | 500m | 1Gi | 2 | 1000m | 2Gi |
+| Prometheus | 100m | 512Mi | 1 | 100m | 512Mi |
 | Mimir | 500m | 1Gi | 2 | 1000m | 2Gi |
+| Kiali | 50m | 128Mi | 1 | 50m | 128Mi |
 | **Security & Operations** |
 | Trivy Operator | 100m | 256Mi | 1 | 100m | 256Mi |
 | Velero | 100m | 256Mi | 1 | 100m | 256Mi |
@@ -702,10 +736,15 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 │                          ┌───────────────────┼───────────────────┐                          │
 │                          ▼                   ▼                   ▼                          │
 │                   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                  │
-│                   │    Loki     │     │   Tempo     │     │   Mimir     │                  │
-│                   │   (Logs)    │     │  (Traces)   │     │  (Metrics)  │                  │
-│                   └──────┬──────┘     └──────┬──────┘     └──────┬──────┘                  │
-│                          │                   │                   │                          │
+│                   │    Loki     │     │ Prometheus  │     │   Kiali     │                  │
+│                   │   (Logs)    │     │  (Scraper)  │     │(Traffic UI) │                  │
+│                   └──────┬──────┘     └──────┬──────┘     └─────────────┘                  │
+│                          │                   │                                               │
+│                          │            ┌──────▼──────┐                                       │
+│                          │            │   Mimir     │                                       │
+│                          │            │ (Storage)   │                                       │
+│                          │            └──────┬──────┘                                       │
+│                          │                   │                                               │
 │                          └───────────────────┼───────────────────┘                          │
 │                                              ▼                                               │
 │                                       ┌─────────────┐                                       │
@@ -774,3 +813,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.1 | 2025-01-04 | AI Agent | Added CloudFormation and AMI constraints from lessons learned |
 | 1.2 | 2025-01-04 | AI Agent | Added Bastion Access Architecture (SSM Session Manager) section |
 | 1.3 | 2025-01-04 | AI Agent | Added Compute Requirements section with EKS add-on resource estimates |
+| 1.4 | 2026-01-06 | AI Agent | Replaced Tempo with Prometheus+Kiali for metrics scraping and traffic visualization |

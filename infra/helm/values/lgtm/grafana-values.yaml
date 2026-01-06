@@ -84,31 +84,8 @@ datasources:
         jsonData:
           maxLines: 1000
 
-      # Tempo for traces
-      - name: Tempo
-        type: tempo
-        access: proxy
-        url: http://tempo.observability.svc.cluster.local:3200
-        isDefault: false
-        jsonData:
-          tracesToLogsV2:
-            datasourceUid: loki
-            spanStartTimeShift: '-1h'
-            spanEndTimeShift: '1h'
-            filterByTraceID: true
-            filterBySpanID: false
-          tracesToMetrics:
-            datasourceUid: mimir
-          serviceMap:
-            datasourceUid: mimir
-          nodeGraph:
-            enabled: true
-          search:
-            hide: false
-          lokiSearch:
-            datasourceUid: loki
-
-      # Mimir for metrics (Prometheus-compatible)
+      # Mimir for metrics (Prometheus-compatible, long-term storage)
+      # Prometheus scrapes and pushes to Mimir via remote_write
       - name: Mimir
         type: prometheus
         access: proxy
@@ -116,9 +93,15 @@ datasources:
         isDefault: true
         jsonData:
           timeInterval: 15s
-          exemplarTraceIdDestinations:
-            - name: traceID
-              datasourceUid: tempo
+
+      # Prometheus for real-time metrics (short-term, 3 days)
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-server.observability.svc.cluster.local:80
+        isDefault: false
+        jsonData:
+          timeInterval: 30s
 
 # Dashboard providers
 dashboardProviders:
@@ -210,4 +193,3 @@ plugins:
 # Environment variables
 env:
   GF_EXPLORE_ENABLED: true
-  GF_FEATURE_TOGGLES_ENABLE: traceqlEditor

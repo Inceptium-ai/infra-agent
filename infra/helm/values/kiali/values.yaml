@@ -1,0 +1,60 @@
+# Kiali Helm Values - Service Mesh Visualization
+# Traffic flow visualization for Istio
+# NIST AU-2: Audit Events (traffic visualization)
+
+# CR configuration
+cr:
+  create: true
+  name: kiali
+  namespace: istio-system
+
+  spec:
+    # Authentication - token based
+    auth:
+      strategy: token
+
+    # Deployment configuration
+    deployment:
+      accessible_namespaces:
+        - "**"
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+    # External services - connect to our stack
+    external_services:
+      # Prometheus for metrics
+      prometheus:
+        url: "http://prometheus-server.observability.svc.cluster.local:80"
+
+      # Grafana for dashboards
+      grafana:
+        enabled: true
+        in_cluster_url: "http://grafana.observability.svc.cluster.local:3000"
+        url: "http://localhost:3000"
+
+      # Tracing - disabled since we removed Tempo
+      tracing:
+        enabled: false
+
+    # Istio configuration
+    istio_namespace: istio-system
+
+    # Server configuration
+    server:
+      port: 20001
+      web_fqdn: ""
+      web_root: "/kiali"
+
+    # Features
+    kiali_feature_flags:
+      clustering:
+        enabled: true
+      validations:
+        ignore:
+          - "KIA1201"  # Ignore missing sidecar warnings for system namespaces

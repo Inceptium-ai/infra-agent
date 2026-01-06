@@ -1021,3 +1021,120 @@ When deploying the LGTM stack, always verify ALL four components are included. U
 - [ ] Grafana (dashboards)
 - [ ] Tempo (traces)
 - [ ] Mimir (metrics) ← Easy to forget!
+
+---
+
+## 32. Tempo vs Kiali - Know What You Actually Need
+
+**Issue:**
+Deployed Tempo for "traffic visualization" but Tempo provides distributed tracing (following individual requests), NOT traffic flow visualization.
+
+**What Each Tool Does:**
+| Tool | Purpose | Visual Output |
+|------|---------|---------------|
+| **Tempo/Jaeger** | Distributed tracing | Waterfall diagram of ONE request through services |
+| **Kiali** | Service mesh visualization | Real-time traffic graph with animated flows |
+
+**The Real Question:**
+- "I want to see how requests flow through my microservices" → **Kiali**
+- "I want to debug latency in a specific request" → **Tempo/Jaeger**
+
+**Fix:**
+Removed Tempo, deployed Kiali for traffic visualization needs.
+
+**Lesson:**
+Before deploying observability tools, clearly define what you want to SEE:
+- Traffic flow topology → Kiali
+- Request tracing → Tempo/Jaeger
+- Log aggregation → Loki
+- Metrics → Prometheus/Mimir
+
+---
+
+## 33. Mimir is Storage, Not a Scraper
+
+**Issue:**
+Deployed Mimir expecting metrics to appear in Grafana, but Mimir had no data.
+
+**Root Cause:**
+Mimir is a **metrics storage backend** (like a database). It does NOT scrape metrics from pods/nodes. It only receives and stores what's pushed to it.
+
+**The Flow:**
+```
+[Pods/Nodes] → [Prometheus SCRAPES] → [remote_write] → [Mimir STORES] → [Grafana QUERIES]
+```
+
+**Fix:**
+Deploy Prometheus with `remoteWrite` configured to push to Mimir:
+```yaml
+server:
+  remoteWrite:
+    - url: "http://mimir-gateway.observability.svc.cluster.local:80/api/v1/push"
+```
+
+**Lesson:**
+Mimir (like Cortex, Thanos) is long-term storage only. You always need a scraper (Prometheus, Grafana Agent, Alloy) to collect metrics and push them.
+
+---
+
+## 34. Prometheus Chart Has Built-in Scrape Configs
+
+**Error:**
+```
+Error loading config: parsing YAML file: found multiple scrape configs with job name "kubernetes-pods"
+```
+
+**Cause:**
+Added a `kubernetes-pods` job in `extraScrapeConfigs` but the Prometheus Helm chart already includes this job by default.
+
+**Fix:**
+Remove duplicate job from extraScrapeConfigs. Only add truly EXTRA configs:
+```yaml
+extraScrapeConfigs: |
+  # Only add configs NOT already in the chart
+  - job_name: 'istiod'
+    kubernetes_sd_configs: ...
+  - job_name: 'envoy-stats'
+    kubernetes_sd_configs: ...
+  # DON'T add kubernetes-pods - chart already has it
+```
+
+**Lesson:**
+Check the Prometheus Helm chart's default values.yaml before adding extraScrapeConfigs. The chart includes many standard Kubernetes scrape configs by default.
+
+---
+
+## 35. Stack Simplification - Question Every Component
+
+**Issue:**
+Initial deployment had too many components without clear justification:
+- Tempo (not needed for traffic visualization)
+- Mimir without scraper (useless alone)
+- Multiple overlapping tools
+
+**Resolution Process:**
+1. Listed ALL deployed components
+2. Asked "what happens without it?" for each
+3. Identified actual need vs assumed need
+4. Removed unnecessary components
+
+**Final Simplified Stack:**
+| Component | Need | Justification |
+|-----------|------|---------------|
+| Loki | Yes | Centralized logs - no alternative |
+| Grafana | Yes | Single pane of glass for dashboards |
+| Prometheus | Yes | Metrics scraping → pushes to Mimir |
+| Mimir | Yes | Long-term metrics (S3-backed, NIST AU-11) |
+| Kiali | Yes | Traffic flow visualization (replaces Tempo for this use case) |
+| Istio | Yes | mTLS, NIST SC-8 requirement |
+| Trivy | Yes | Vulnerability scanning, NIST SI-2 |
+| Velero | Yes | Backup/restore, NIST CP-9 |
+| Kubecost | Optional | Pod-level cost visibility |
+| Headlamp | Optional | K8s web UI convenience |
+
+**Lesson:**
+Before deploying any component, ask:
+1. What problem does it solve?
+2. What happens without it?
+3. Is there overlap with existing tools?
+4. Is it truly needed for compliance?

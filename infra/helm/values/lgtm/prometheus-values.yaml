@@ -1,0 +1,123 @@
+# Prometheus Helm Values - Metrics Scraping
+# Scrapes Kubernetes metrics and pushes to Mimir
+# NIST AU-2: Audit Events (metrics collection)
+
+# Server configuration
+server:
+  enabled: true
+  replicaCount: 1
+
+  # Retention - short since we push to Mimir for long-term
+  retention: "3d"
+
+  # Resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Persistent volume for local cache
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: gp3
+
+  # Remote write to Mimir
+  remoteWrite:
+    - url: "http://mimir-gateway.observability.svc.cluster.local:80/api/v1/push"
+      headers:
+        X-Scope-OrgID: anonymous
+
+  # Global scrape settings
+  global:
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    evaluation_interval: 30s
+
+# Alertmanager - disable (use Mimir's alertmanager later if needed)
+alertmanager:
+  enabled: false
+
+# Pushgateway - disable
+pushgateway:
+  enabled: false
+
+# Node exporter - enable for node-level metrics
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# kube-state-metrics - enable for Kubernetes object metrics
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# ConfigMap reload - enable
+configmapReload:
+  prometheus:
+    enabled: true
+
+# Service account
+serviceAccounts:
+  server:
+    create: true
+    name: prometheus-server
+  nodeExporter:
+    create: true
+    name: prometheus-node-exporter
+
+# Extra scrape configs for Istio
+extraScrapeConfigs: |
+  # Scrape Istio control plane
+  - job_name: 'istiod'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - istio-system
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: istiod
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        action: keep
+        regex: '15014'
+
+  # Scrape Istio proxies (Envoy sidecars)
+  - job_name: 'envoy-stats'
+    metrics_path: /stats/prometheus
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        action: keep
+        regex: 'istio-proxy'
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:15090
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+
+  # Note: kubernetes-pods job is already included in the chart defaults
+  # Additional pod scraping config can be added here if needed
