@@ -41,7 +41,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 
 ### Storage Assumptions
 1. **No Node-Local Storage**: Pods are ephemeral; node local storage MUST NOT be used for persistence
-2. **S3 for Object Storage**: Logs (Loki), traces (Tempo), backups (Velero) use S3 with IRSA authentication
+2. **S3 for Object Storage**: Logs (Loki), metrics (Mimir), backups (Velero) use S3 with IRSA authentication
 3. **EBS for Block Storage**: Stateful apps (Grafana, Kubecost) use gp3 PVCs - EBS volumes persist independently of pods/nodes
 4. **EBS is NOT Node-Local**: gp3 PVCs are AWS-managed block storage, not on node's disk; volumes survive node failures
 5. **EFS for Shared Access**: If multiple pods need ReadWriteMany access, use EFS (not currently required)
@@ -51,11 +51,11 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 
 | Storage Type | Use Case | NIST Control | Addons Using |
 |--------------|----------|--------------|--------------|
-| **S3** | Object storage (logs, traces, backups) | SC-28, CP-9 | Loki, Tempo, Velero |
+| **S3** | Object storage (logs, metrics, backups) | SC-28, CP-9 | Loki, Mimir, Velero |
 | **EBS (gp3)** | Block storage (databases, stateful apps) | SC-28 | Grafana, Kubecost |
 | **etcd (CRDs)** | Kubernetes-native resources | CM-8 | Trivy Operator |
 | **EFS** | Shared file access (ReadWriteMany) | - | Not currently used |
-| **Node Local** | ❌ NEVER | - | ❌ Prohibited |
+| **Node Local** | NEVER | - | Prohibited |
 
 **Why EBS (gp3) is Safe:**
 - Volumes are AWS-managed, NOT on node's ephemeral disk
@@ -72,7 +72,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 |------------|--------|------------|
 | EKS managed node groups only | Cannot use custom AMIs with specialized configurations | Use EKS-optimized AMIs, configure via user data |
 | CloudFormation (not Terraform) | Limited state management compared to Terraform | Use nested stacks, export/import values |
-| 100.64.0.0/16 for pods | Secondary CIDR required on VPC | Configure VPC CNI custom networking |
+| 100.64.0.0/16 for pods/nodes | Secondary CIDR required on VPC | Nodes deployed in 100.64.x.x subnets (no custom networking needed) |
 | Istio sidecar overhead | ~100MB RAM per pod | Right-size node groups accordingly |
 
 ### Compliance Constraints
@@ -131,17 +131,16 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 ### Open Source Components
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| Istio | 1.24+ | Service mesh, mTLS |
-| Loki | 3.x | Log aggregation |
-| Grafana | 11.x | Visualization |
-| Prometheus | 2.x | Metrics scraping |
-| Mimir | 2.x | Metrics long-term storage (S3-backed) |
-| Kiali | 2.x | Service mesh traffic visualization |
-| Trivy | 0.58+ | Vulnerability scanning |
-| Trivy Operator | 0.24+ | In-cluster scanning |
-| Velero | 1.15+ | Backup/restore |
-| Kubecost | 2.x | Cost management |
-| Headlamp | 0.26+ | Admin console |
+| Istio | 1.28 | Service mesh, mTLS |
+| Loki | 3.6 | Log aggregation |
+| Grafana | 12.3 | Visualization |
+| Prometheus | 3.8 | Metrics scraping |
+| Mimir | 3.0 | Metrics long-term storage (S3-backed) |
+| Kiali | 2.20 | Service mesh traffic visualization |
+| Trivy Operator | 0.29 | In-cluster vulnerability scanning |
+| Velero | 1.17 | Backup/restore |
+| Kubecost | 2.8 | Cost management |
+| Headlamp | 0.39 | Admin console |
 | LangGraph | Latest | Agent orchestration |
 
 ### Python Dependencies
@@ -599,19 +598,19 @@ Phase 1: Foundation              Phase 2: EKS                Phase 3: Services
 │  │  │  us-east-1a     │    │  us-east-1b     │    │  us-east-1c     │                                      │  │
 │  │  │  ┌───────────┐  │    │  ┌───────────┐  │    │  ┌───────────┐  │                                      │  │
 │  │  │  │  Bastion  │  │    │  │    NAT    │  │    │  │    RDS    │  │    Route: 0.0.0.0/0 → NAT            │  │
-│  │  │  │ t3a.medium│  │    │  │  Gateway  │  │    │  │  Primary  │  │                                      │  │
+│  │  │  │ t3a.medium│  │    │  │  Gateway  │  │    │  │  Primary  │  │    (NO EKS nodes here)               │  │
 │  │  │  └───────────┘  │    │  └───────────┘  │    │  └───────────┘  │                                      │  │
 │  │  └─────────────────┘    └─────────────────┘    └─────────────────┘                                      │  │
 │  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘  │
 │                                                        │                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐  │
-│  │                                 POD SUBNETS (100.64.0.0/16) - NON-ROUTABLE                               │  │
+│  │                             EKS NODE SUBNETS (100.64.0.0/16) - NON-ROUTABLE                              │  │
 │  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐                                      │  │
 │  │  │  us-east-1a     │    │  us-east-1b     │    │  us-east-1c     │                                      │  │
 │  │  │  ┌───────────┐  │    │  ┌───────────┐  │    │  ┌───────────┐  │                                      │  │
 │  │  │  │ EKS Nodes │  │    │  │ EKS Nodes │  │    │  │ EKS Nodes │  │    Route: 0.0.0.0/0 → NAT (outbound) │  │
-│  │  │  │   Pods    │  │    │  │   Pods    │  │    │  │   Pods    │  │    NOT directly addressable from     │  │
-│  │  │  └───────────┘  │    │  └───────────┘  │    │  └───────────┘  │    internet                          │  │
+│  │  │  │  + Pods   │  │    │  │  + Pods   │  │    │  │  + Pods   │  │    Nodes & pods NOT directly         │  │
+│  │  │  └───────────┘  │    │  └───────────┘  │    │  └───────────┘  │    addressable from internet         │  │
 │  │  └─────────────────┘    └─────────────────┘    └─────────────────┘                                      │  │
 │  └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -797,10 +796,16 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | Component | Version | Notes |
 |-----------|---------|-------|
 | EKS | 1.34 | Latest standard support |
-| Istio | 1.24+ | mTLS enabled |
-| Loki | 3.x | Scalable mode |
-| Grafana | 11.x | Unified observability |
-| Trivy | 0.58+ | Latest scanning rules |
+| Istio | 1.28 | mTLS enabled |
+| Loki | 3.6 | Scalable mode |
+| Grafana | 12.x | Unified observability |
+| Prometheus | 3.8 | Metrics scraping |
+| Mimir | 3.0 | Long-term metrics storage |
+| Kiali | 2.20 | Traffic visualization |
+| Trivy Operator | 0.29 | In-cluster scanning |
+| Velero | 1.17 | Backup/restore |
+| Kubecost | 2.8 | Cost management |
+| Headlamp | 0.39 | Admin console |
 | Python | 3.11+ | LangGraph compatible |
 
 ---
@@ -813,4 +818,5 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.1 | 2025-01-04 | AI Agent | Added CloudFormation and AMI constraints from lessons learned |
 | 1.2 | 2025-01-04 | AI Agent | Added Bastion Access Architecture (SSM Session Manager) section |
 | 1.3 | 2025-01-04 | AI Agent | Added Compute Requirements section with EKS add-on resource estimates |
-| 1.4 | 2026-01-06 | AI Agent | Replaced Tempo with Prometheus+Kiali for metrics scraping and traffic visualization |
+| 1.4 | 2025-01-06 | AI Agent | Replaced Tempo with Prometheus+Kiali for metrics scraping and traffic visualization |
+| 1.5 | 2025-01-06 | AI Agent | Corrected storage matrix (Tempo→Mimir), clarified nodes in 100.64.x.x subnets (no VPC CNI custom networking needed) |
