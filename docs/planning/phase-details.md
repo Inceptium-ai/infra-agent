@@ -595,7 +595,7 @@ schedules:
 
 ### Phase 3 Success
 - [ ] Istio mTLS enabled
-- [ ] LGTM stack operational
+- [ ] Observability stack operational (Loki, Grafana, Mimir, Prometheus, Kiali)
 - [ ] Grafana dashboards accessible
 
 ### Phase 4 Success

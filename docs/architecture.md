@@ -9,7 +9,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 - NIST 800-53 R5 compliance validation and enforcement
 - Zero Trust network architecture with non-routable pod subnets
 - mTLS encryption via Istio service mesh
-- Comprehensive observability with LGTM stack
+- Comprehensive observability stack (Loki, Grafana, Mimir, Prometheus, Kiali)
 - AI-driven drift detection and remediation
 - Blue/Green deployment with automated rollback
 
@@ -630,7 +630,7 @@ Based on compute requirements, the recommended instance type is **t3a.xlarge**:
 Phase 1: Foundation              Phase 2: EKS                Phase 3: Services
 ┌─────────────────┐             ┌─────────────────┐         ┌─────────────────┐
 │ VPC + Subnets   │────────────►│ EKS Cluster     │────────►│ Istio Mesh      │
-│ NACLs + SGs     │             │ Node Groups     │         │ LGTM Stack      │
+│ NACLs + SGs     │             │ Node Groups     │         │ Observability   │
 │ NAT + IGW       │             │ OIDC Provider   │         │ Trivy Operator  │
 │ IAM Roles       │             │ EKS Add-ons     │         │ Headlamp        │
 └─────────────────┘             └─────────────────┘         └─────────────────┘
@@ -904,3 +904,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.4 | 2025-01-06 | AI Agent | Replaced Tempo with Prometheus+Kiali for metrics scraping and traffic visualization |
 | 1.5 | 2025-01-06 | AI Agent | Corrected storage matrix (Tempo→Mimir), clarified nodes in 100.64.x.x subnets (no VPC CNI custom networking needed) |
 | 1.6 | 2025-01-10 | AI Agent | Added Kafka WAL documentation for Mimir, updated data flow diagrams, added Mimir component details |
+| 1.7 | 2025-01-10 | AI Agent | Replaced LGTM references with "Observability Stack" (Tempo removed) |

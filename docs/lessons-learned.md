@@ -991,36 +991,39 @@ Make cfn-lint a mandatory step in the deployment process. Add to pre-commit hook
 
 ---
 
-## 31. Mimir Was Missing from LGTM Stack
+## 31. Mimir Was Missing from Observability Stack
 
 **Issue:**
-Deployed Grafana, Loki, and Tempo but forgot Mimir (metrics). This caused:
+Deployed Grafana and Loki but forgot Mimir (metrics). This caused:
 - Grafana dashboards not working (no metrics)
 - "No data" in all metric panels
-- Tempo service maps unavailable
 
 **Root Cause:**
-The plan mentioned "LGTM stack" (Loki, Grafana, Tempo, Mimir) but Mimir was not included in the initial deployment.
+Mimir was not included in the initial deployment.
 
 **Fix:**
 1. Create S3 bucket + IRSA role via CloudFormation (mimir-storage.yaml)
 2. Deploy Mimir via Helm with S3 backend
 3. Grafana datasources already configured for `mimir-nginx.observability.svc`
 
-**LGTM Stack Components:**
+**Observability Stack Components (Current):**
 | Component | Purpose | Storage |
 |-----------|---------|---------|
-| **L**oki | Logs | S3 |
-| **G**rafana | Dashboards | EBS (PVC) |
-| **T**empo | Traces | S3 |
-| **M**imir | Metrics | S3 |
+| **Loki** | Logs | S3 |
+| **Grafana** | Dashboards | EBS (PVC) |
+| **Mimir** | Metrics storage | S3 |
+| **Prometheus** | Metrics scraping | - |
+| **Kiali** | Traffic visualization | - |
+
+*Note: Tempo (traces) was removed - see lesson #32.*
 
 **Lesson:**
-When deploying the LGTM stack, always verify ALL four components are included. Use a checklist:
+When deploying the observability stack, verify all components are included:
 - [ ] Loki (logs)
 - [ ] Grafana (dashboards)
-- [ ] Tempo (traces)
-- [ ] Mimir (metrics) ← Easy to forget!
+- [ ] Mimir (metrics storage) ← Easy to forget!
+- [ ] Prometheus (metrics scraping)
+- [ ] Kiali (Istio traffic visualization)
 
 ---
 

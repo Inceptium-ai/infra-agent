@@ -72,7 +72,7 @@ Infrastructure is deployed in the following order to satisfy dependencies:
 ├─────────────────────────────────────────────────────────────────┤
 │  7. Helm Releases                                               │
 │     ├── Istio (service mesh)                                    │
-│     ├── LGTM Stack (observability)                              │
+│     ├── Observability Stack (Loki, Grafana, Mimir, Prometheus)  │
 │     ├── Trivy Operator (security scanning)                      │
 │     ├── Velero (backups)                                        │
 │     ├── Kubecost (cost management)                              │
@@ -1000,7 +1000,7 @@ helm upgrade --install istio-ingress istio/gateway \
   --wait
 ```
 
-### 2. LGTM Observability Stack
+### 2. Observability Stack
 
 ```bash
 # Install Loki (Logs)
@@ -1009,13 +1009,13 @@ helm upgrade --install loki grafana/loki \
   -f infra/helm/values/lgtm/loki-values.yaml \
   --wait
 
-# Install Tempo (Traces)
-helm upgrade --install tempo grafana/tempo \
+# Install Prometheus (Metrics Scraping)
+helm upgrade --install prometheus prometheus-community/prometheus \
   -n observability \
-  -f infra/helm/values/lgtm/tempo-values.yaml \
+  -f infra/helm/values/lgtm/prometheus-values.yaml \
   --wait
 
-# Install Mimir (Metrics) - Optional
+# Install Mimir with Kafka (Metrics Storage)
 helm upgrade --install mimir grafana/mimir-distributed \
   -n observability \
   -f infra/helm/values/lgtm/mimir-values.yaml \
@@ -1025,6 +1025,12 @@ helm upgrade --install mimir grafana/mimir-distributed \
 helm upgrade --install grafana grafana/grafana \
   -n observability \
   -f infra/helm/values/lgtm/grafana-values.yaml \
+  --wait
+
+# Install Kiali (Istio Traffic Visualization)
+helm upgrade --install kiali kiali/kiali-operator \
+  -n istio-system \
+  -f infra/helm/values/kiali/values.yaml \
   --wait
 ```
 
