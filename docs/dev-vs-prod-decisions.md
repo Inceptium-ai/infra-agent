@@ -118,7 +118,7 @@ The current infrastructure was designed with **"Dev = Prod"** parity in mind. Wh
 
 ---
 
-## Kafka in Mimir: Analysis & Recommendation
+## Kafka in Mimir: Decision (KEPT for Prod Parity)
 
 ### What is Kafka's Role in Mimir 3.0?
 
@@ -128,11 +128,11 @@ Mimir 3.0 introduced Kafka as an **ingest write-ahead log (WAL)** between distri
 Mimir 2.x (Classic):
   Prometheus → Distributor → Ingester → S3
 
-Mimir 3.0 (With Kafka):
-  Prometheus → Distributor → Kafka → Ingester → S3
+Mimir 3.0 (With Kafka - Current Config):
+  Prometheus → Distributor → Kafka (WAL) → Ingester → S3
 ```
 
-### Why Grafana Added Kafka
+### Why We Kept Kafka (Prod Parity Decision)
 
 | Benefit | Explanation |
 |---------|-------------|
@@ -141,84 +141,238 @@ Mimir 3.0 (With Kafka):
 | **Horizontal Scaling** | Add/remove ingesters without data loss during rebalancing |
 | **Backpressure Handling** | Kafka buffers during load spikes |
 | **Exactly-Once Semantics** | Prevents duplicate metrics |
+| **NIST AU-9** | Protection of audit information through WAL durability |
 
-### Why Kafka is Problematic for Dev
+### Known Issues & Mitigations
 
-| Issue | Impact |
-|-------|--------|
-| **StatefulSet with PVC** | EBS volumes are AZ-bound; when nodes scale to 0 and back, PVs can't reattach to nodes in different AZs |
-| **Memory Requirements** | Kafka needs ~1GB+ RAM minimum |
-| **Additional Complexity** | One more component to monitor and troubleshoot |
-| **Overkill for Dev** | Durability during ingester crashes is a prod concern, not dev |
-| **Current Status** | `mimir-kafka-0` is Pending due to PV node affinity mismatch |
+| Issue | Mitigation |
+|-------|------------|
+| **PVC AZ Affinity** | When nodes scale to 0 and back, delete stuck Kafka PVC to recreate in new AZ |
+| **Memory Requirements** | Kafka needs ~1GB+ RAM - ensure nodes have capacity |
+| **Scale-to-Zero** | After scaling nodes back up, may need to restart Kafka pod |
 
-### Current Failure Cascade
-
-```
-mimir-kafka-0: Pending (PV stuck on old node AZ)
-    ↓
-mimir-distributor: CrashLoopBackOff (can't connect to Kafka)
-    ↓
-mimir-ingester: CrashLoopBackOff (can't connect to Kafka)
-    ↓
-mimir-querier: CrashLoopBackOff (no ingesters available)
-    ↓
-Mimir: Non-functional
-```
-
-### Recommendation: Disable Kafka for Dev
-
-**Action:** Reconfigure Mimir to use classic ingestion path (no Kafka)
-
-**Helm Values Change:**
-```yaml
-mimir:
-  structuredConfig:
-    # Disable Kafka-based ingestion
-    ingest_storage:
-      enabled: false
-
-    # Use classic ingester configuration
-    ingester:
-      ring:
-        replication_factor: 1  # Dev doesn't need 3-way replication
-```
-
-**Benefits:**
-- Eliminates Kafka pod and its PVC issues
-- Reduces memory footprint by ~1GB
-- Simpler architecture for dev
-- Still maintains prod-like architecture (just without WAL durability)
-
-**Trade-offs:**
-- If ingester crashes during write, those metrics are lost (acceptable for dev)
-- No backpressure buffering (dev workloads are light)
-
-### Alternative Options
-
-| Option | Effort | Result |
-|--------|--------|--------|
-| **1. Disable Kafka (Recommended)** | Low | Classic ingestion, fixes immediately |
-| **2. Delete stuck PVCs** | Medium | Kafka restarts, may recur on next scale-to-zero |
-| **3. Use single-AZ for dev** | High | Prevents PV affinity issues but limits HA |
-| **4. Remove Mimir entirely** | Low | Use Prometheus only (15-day retention) |
-
-### Implementation Steps
-
-To disable Kafka:
+### Recovery Procedure (When Kafka Gets Stuck)
 
 ```bash
-# 1. Update mimir-values.yaml
-# Add ingest_storage.enabled: false
+# 1. Delete stuck Kafka StatefulSet and PVC
+kubectl delete statefulset mimir-kafka -n observability
+kubectl delete pvc kafka-data-mimir-kafka-0 -n observability
 
-# 2. Upgrade Helm release
+# 2. Trigger Helm to recreate
 helm upgrade mimir grafana/mimir-distributed \
   -n observability \
   -f infra/helm/values/lgtm/mimir-values.yaml
 
-# 3. Delete stuck Kafka resources
-kubectl delete statefulset mimir-kafka -n observability
-kubectl delete pvc kafka-data-mimir-kafka-0 -n observability
+# 3. Restart dependent pods
+kubectl delete pod -n observability -l app.kubernetes.io/component=distributor
+kubectl delete pod -n observability -l app.kubernetes.io/component=ingester
+kubectl delete pod -n observability -l app.kubernetes.io/component=querier
+```
+
+### Dev Alternative (If Prod Parity Not Required)
+
+To disable Kafka for simpler dev environment:
+
+```yaml
+# mimir-values.yaml
+kafka:
+  enabled: false
+
+mimir:
+  structuredConfig:
+    ingest_storage:
+      enabled: false
+```
+
+---
+
+## AWS Managed Services vs Self-Managed: Full Comparison
+
+This section compares our current self-managed observability stack against using AWS managed services.
+
+### Option A: Current Stack (Self-Managed OSS)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SELF-MANAGED (Current)                        │
+├─────────────────────────────────────────────────────────────────┤
+│  METRICS:   Prometheus → Mimir → S3                             │
+│  LOGS:      Fluent Bit → Loki → S3                              │
+│  TRACES:    (Not deployed - removed Tempo)                       │
+│  DASHBOARDS: Grafana                                             │
+│  TRAFFIC:   Kiali (Istio visualization)                         │
+│  COST:      Kubecost                                             │
+│  SECURITY:  Trivy Operator                                       │
+├─────────────────────────────────────────────────────────────────┤
+│  Pods: ~40        Storage: S3 + EBS        Cost: ~$100/mo*      │
+│  * Infrastructure cost only, not including compute              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Option B: AWS CloudWatch + Container Insights
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AWS MANAGED ALTERNATIVE                       │
+├─────────────────────────────────────────────────────────────────┤
+│  METRICS:   CloudWatch Container Insights                        │
+│  LOGS:      CloudWatch Logs (Fluent Bit → CW)                   │
+│  TRACES:    AWS X-Ray                                            │
+│  DASHBOARDS: CloudWatch Dashboards                               │
+│  TRAFFIC:   (None - no Istio visualization)                     │
+│  COST:      AWS Cost Explorer                                    │
+│  SECURITY:  Amazon Inspector + ECR Scanning                      │
+├─────────────────────────────────────────────────────────────────┤
+│  Pods: ~5         Storage: CloudWatch       Cost: ~$150-300/mo* │
+│  * Varies significantly with log/metric volume                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Detailed Comparison Table
+
+| Capability | Current (Self-Managed) | AWS Managed | Dev Alternative |
+|------------|----------------------|-------------|-----------------|
+| **Metrics Collection** | Prometheus (scrape) | CloudWatch Agent + Container Insights | CloudWatch (simpler) |
+| **Metrics Storage** | Mimir (S3-backed, unlimited) | CloudWatch Metrics (15mo retention) | CloudWatch (managed) |
+| **Metrics Cost** | S3 storage (~$5/mo) | $0.30/metric/month (can explode) | CloudWatch basic |
+| **Log Collection** | Loki + Promtail | CloudWatch Logs + Fluent Bit | CloudWatch (managed) |
+| **Log Storage** | S3 (~$5/mo for 90 days) | $0.50/GB ingestion + $0.03/GB storage | CloudWatch |
+| **Log Retention** | 90 days (configurable) | Configurable (costs scale) | 7 days (cheaper) |
+| **Log Query** | LogQL (powerful) | CloudWatch Insights ($0.005/GB scanned) | Basic |
+| **Dashboards** | Grafana (powerful, customizable) | CloudWatch Dashboards (limited) | CloudWatch |
+| **Alerting** | Grafana Alerting | CloudWatch Alarms | CloudWatch |
+| **Traffic Visualization** | Kiali (real-time Istio mesh) | None (no equivalent) | Skip |
+| **Distributed Tracing** | (Removed Tempo) | X-Ray ($5/million traces) | X-Ray |
+| **Cost Analysis** | Kubecost (K8s-native) | AWS Cost Explorer (account-level) | Cost Explorer |
+| **Security Scanning** | Trivy Operator (continuous) | ECR scanning + Inspector | ECR basic |
+| **Setup Complexity** | High (many Helm charts) | Low (enable features) | Low |
+| **Operational Overhead** | High (manage pods, PVCs) | Low (AWS managed) | Low |
+| **Customization** | Full control | Limited to AWS features | Limited |
+| **Vendor Lock-in** | None (OSS) | High (AWS-specific) | High |
+| **Multi-Cloud** | Yes (portable) | No (AWS only) | No |
+
+### Three-Way Cost Comparison
+
+| Component | AWS Managed | Self-Managed PROD | Self-Managed DEV | Notes |
+|-----------|-------------|-------------------|------------------|-------|
+| **EKS Control Plane** | $73 | $73 | $73 | Fixed cost, all options |
+| **Compute Nodes** | $110 (2x t3a.medium) | $330 (3x t3a.xlarge) | $110 (2x t3a.medium) | Fewer pods = smaller nodes |
+| **NAT Gateways** | $35 (1 AZ) | $100 (3 AZ) | $35 (1 AZ) | HA requires multi-AZ |
+| **EBS Storage** | $10 | $50 | $20 | PVCs for stateful workloads |
+| **S3 Storage** | $0 | $20 | $5 | Loki/Mimir/Velero buckets |
+| | | | | |
+| **--- Observability ---** | | | | |
+| **Metrics Storage** | $50-150 (CW Metrics) | $5 (Mimir→S3) | $0 (Prometheus only) | CW: $0.30/metric/mo |
+| **Metrics Collection** | $0 (CW Agent) | $0 (Prometheus) | $0 (Prometheus) | Agent vs scraper |
+| **Log Ingestion** | $50-100 (CW Logs) | $0 (Loki) | $0 (Loki) | CW: $0.50/GB ingested |
+| **Log Storage** | $10-30 (CW Logs) | $5 (S3) | $2 (S3, 7 days) | CW: $0.03/GB/mo |
+| **Log Queries** | $5-20 (CW Insights) | $0 (LogQL) | $0 (LogQL) | CW: $0.005/GB scanned |
+| **Dashboards** | $9 (3 dashboards) | $0 (Grafana) | $0 (Grafana) | CW: $3/dashboard/mo |
+| **Alerts** | $5 (50 alarms) | $0 (Grafana) | $0 (Grafana) | CW: $0.10/alarm/mo |
+| **Tracing** | $5-20 (X-Ray) | $0 (not deployed) | $0 | X-Ray: $5/million traces |
+| | | | | |
+| **--- Optional Tools ---** | | | | |
+| **Traffic Viz (Kiali)** | N/A | $0 (included) | $0 or skip | No AWS equivalent |
+| **Cost Analysis** | $0 (Cost Explorer) | $0 (Kubecost) | $0 (Cost Explorer) | Kubecost = K8s-native |
+| **Security Scanning** | $0 (ECR + Inspector) | $0 (Trivy) | $0 (ECR basic) | Inspector: free tier |
+| **Backup (Velero)** | $0 (not needed) | $5 (S3) | $0 (skip) | AWS Backup alternative |
+| | | | | |
+| **--- TOTALS ---** | | | | |
+| **Infrastructure** | **$228** | **$573** | **$243** | Nodes + NAT + Storage |
+| **Observability** | **$134-353** | **$10** | **$2** | Variable vs fixed |
+| **GRAND TOTAL** | **$362-581/mo** | **$583/mo** | **$245/mo** | |
+
+### Cost Comparison Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        MONTHLY COST COMPARISON                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  AWS MANAGED          ████████████████████████████████░░░░  $362-581/mo     │
+│  (CW + Container Insights)    Variable based on log/metric volume           │
+│                                                                              │
+│  SELF-MANAGED PROD    ████████████████████████████████████  $583/mo         │
+│  (Current Config)             Fixed, predictable costs                      │
+│                                                                              │
+│  SELF-MANAGED DEV     ████████████░░░░░░░░░░░░░░░░░░░░░░░░  $245/mo         │
+│  (Optimized)                  42% savings vs Prod                           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### AWS Managed Prometheus (AMP) + Managed Grafana (AMG) Option
+
+For teams wanting OSS compatibility with AWS management:
+
+| Component | AMP + AMG | Self-Managed | Notes |
+|-----------|-----------|--------------|-------|
+| **Amazon Managed Prometheus** | $0.10/million samples ingested + $0.03/GB storage | $5/mo (Mimir→S3) | AMP can get expensive at scale |
+| **Amazon Managed Grafana** | $9/editor/mo + $5/viewer/mo | $0 (self-hosted) | Per-user pricing |
+| **Example: 3 users, 10M samples/mo** | $27 + $1 + $1 = **$29/mo** | **$5/mo** | AMP cheaper at low volume |
+| **Example: 10 users, 100M samples/mo** | $90 + $10 + $5 = **$105/mo** | **$5/mo** | Self-managed wins at scale |
+
+**AMP/AMG Best For:**
+- Small teams (<5 users)
+- Low metric volume (<50M samples/month)
+- Teams wanting Grafana without managing pods
+- Hybrid: AMP for storage, self-hosted Grafana for dashboards
+
+### Decision Matrix
+
+| Factor | Self-Managed Wins | AWS Managed Wins |
+|--------|------------------|------------------|
+| **Cost at Scale** | ✓ (predictable S3 costs) | |
+| **Setup Speed** | | ✓ (enable and go) |
+| **Operational Overhead** | | ✓ (no pods to manage) |
+| **Query Power** | ✓ (LogQL, PromQL) | |
+| **Customization** | ✓ (full control) | |
+| **Dashboard Flexibility** | ✓ (Grafana) | |
+| **Multi-Cloud/Portability** | ✓ (OSS) | |
+| **Istio Traffic Visualization** | ✓ (Kiali) | (no equivalent) |
+| **K8s-Native Cost Analysis** | ✓ (Kubecost) | |
+| **Low Volume Dev** | | ✓ (simpler) |
+| **Compliance Familiarity** | | ✓ (AWS artifacts) |
+
+### Why We Chose Self-Managed
+
+1. **Production Parity**: Dev matches prod architecture
+2. **Cost Control**: Predictable S3 costs vs variable CloudWatch
+3. **Query Power**: LogQL and PromQL are more powerful than CloudWatch Insights
+4. **Grafana Flexibility**: Custom dashboards, multiple data sources
+5. **Kiali**: Real-time Istio traffic visualization (no AWS equivalent)
+6. **Kubecost**: Kubernetes-native cost analysis (namespace/pod level)
+7. **No Vendor Lock-in**: Portable to any cloud
+8. **NIST Compliance**: Full control over audit log retention and protection
+
+### When to Consider AWS Managed (Dev Simplification)
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Quick prototype, <1 week | CloudWatch + Container Insights |
+| Cost-sensitive, low volume | CloudWatch (fewer pods) |
+| Team unfamiliar with Grafana | CloudWatch Dashboards |
+| No Istio/service mesh | CloudWatch (Kiali not needed) |
+| Single AWS account | CloudWatch (simpler) |
+| Multi-cloud or hybrid | Self-managed (portability) |
+| High log volume (>100GB/day) | Self-managed (cost) |
+| Advanced queries needed | Self-managed (LogQL/PromQL) |
+
+### Hybrid Option (Best of Both)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    HYBRID APPROACH                               │
+├─────────────────────────────────────────────────────────────────┤
+│  METRICS:   Prometheus → CloudWatch (via remote_write)          │
+│  LOGS:      CloudWatch Logs (simple) + Loki (advanced)          │
+│  DASHBOARDS: Grafana (queries both CW and Loki/Prometheus)      │
+│  TRAFFIC:   Kiali (keep for Istio)                              │
+│  COST:      AWS Cost Explorer + Kubecost                        │
+├─────────────────────────────────────────────────────────────────┤
+│  Benefit: AWS managed storage + Grafana flexibility             │
+│  Drawback: More complex, two systems to manage                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -257,3 +411,4 @@ kubectl delete pvc kafka-data-mimir-kafka-0 -n observability
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-01-10 | AI Agent | Initial dev vs prod analysis with Kafka recommendation |
+| 1.1 | 2025-01-10 | AI Agent | Added three-way cost comparison (AWS vs Prod vs Dev), AMP/AMG pricing |

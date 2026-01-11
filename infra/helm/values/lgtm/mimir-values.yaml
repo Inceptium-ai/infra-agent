@@ -1,10 +1,44 @@
 # Mimir Helm Values - Metrics Storage
 # NIST AU-2: Audit Events (metrics collection)
+# NIST AU-9: Protection of Audit Information (Kafka WAL provides durability)
+
+# =============================================================================
+# KAFKA CONFIGURATION (Write-Ahead Log for Durability)
+# =============================================================================
+# Kafka acts as a WAL between Distributor and Ingester:
+#   Prometheus -> Distributor -> Kafka (WAL) -> Ingester -> S3
+#
+# Benefits:
+#   - Durability: If ingester crashes, metrics replay from Kafka
+#   - Decoupling: Distributors don't block on slow ingesters
+#   - Scaling: Add/remove ingesters without data loss
+#
+# Trade-off: Requires StatefulSet with PVC (EBS is AZ-bound)
+# =============================================================================
+kafka:
+  enabled: true
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1
+      memory: 2Gi
 
 # Deployment mode: distributed for production
 mimir:
   # Structured config
   structuredConfig:
+    # Enable Kafka-based ingest storage (Mimir 3.0+)
+    ingest_storage:
+      enabled: true
+      kafka:
+        address: mimir-kafka.observability.svc.cluster.local:9092
     common:
       storage:
         backend: s3
