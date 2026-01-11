@@ -1,0 +1,143 @@
+# Istio Gateway and VirtualService for GitLab
+# Apply with: kubectl apply -f infra/helm/values/gitlab/istio/
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: gitlab-gateway
+  namespace: gitlab
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    # HTTPS for GitLab Web UI
+    - port:
+        number: 443
+        name: https-gitlab
+        protocol: HTTPS
+      hosts:
+        - "gitlab.example.com"  # CHANGE THIS
+      tls:
+        mode: SIMPLE
+        credentialName: gitlab-tls-cert  # Secret with TLS cert
+    # HTTPS for Container Registry
+    - port:
+        number: 443
+        name: https-registry
+        protocol: HTTPS
+      hosts:
+        - "registry.example.com"  # CHANGE THIS
+      tls:
+        mode: SIMPLE
+        credentialName: gitlab-registry-tls-cert
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: gitlab-virtualservice
+  namespace: gitlab
+spec:
+  hosts:
+    - "gitlab.example.com"  # CHANGE THIS
+  gateways:
+    - gitlab-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: gitlab-webservice-default
+            port:
+              number: 8181
+      timeout: 300s
+      retries:
+        attempts: 3
+        perTryTimeout: 100s
+        retryOn: "5xx,reset,connect-failure"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: gitlab-registry-virtualservice
+  namespace: gitlab
+spec:
+  hosts:
+    - "registry.example.com"  # CHANGE THIS
+  gateways:
+    - gitlab-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: gitlab-registry
+            port:
+              number: 5000
+      timeout: 600s
+---
+# PeerAuthentication - enforce mTLS for all GitLab services
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: gitlab-mtls
+  namespace: gitlab
+spec:
+  mtls:
+    mode: STRICT
+---
+# DestinationRule - enable mTLS for GitLab services
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: gitlab-webservice
+  namespace: gitlab
+spec:
+  host: gitlab-webservice-default
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: UPGRADE
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: gitlab-gitaly
+  namespace: gitlab
+spec:
+  host: gitlab-gitaly
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: gitlab-redis
+  namespace: gitlab
+spec:
+  host: gitlab-redis-master
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: gitlab-postgresql
+  namespace: gitlab
+spec:
+  host: gitlab-postgresql
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

@@ -1,0 +1,298 @@
+# GitLab Helm Chart - Minimal Configuration with Istio
+# Chart: gitlab/gitlab
+# Docs: https://docs.gitlab.com/charts/
+#
+# This is a MINIMAL non-production configuration for dev/test environments.
+# For production, use the 1K+ reference architecture.
+#
+# Istio Integration:
+# - Namespace must have label: istio-injection=enabled
+# - All pods will have Envoy sidecar injected automatically
+# - mTLS enabled between all GitLab components
+
+global:
+  # Domain configuration
+  hosts:
+    domain: example.com  # CHANGE THIS
+    gitlab:
+      name: gitlab.example.com  # CHANGE THIS
+    registry:
+      name: registry.example.com  # CHANGE THIS
+    minio:
+      name: minio.example.com  # Not used - using S3
+
+  # Ingress - use Istio Gateway instead of nginx
+  ingress:
+    enabled: false
+    configureCertmanager: false
+
+  # GitLab Edition
+  edition: ce  # Community Edition (free)
+
+  # Time zone
+  time_zone: UTC
+
+  # Email (optional - configure for notifications)
+  email:
+    from: gitlab@example.com
+    display_name: GitLab
+
+  # SMTP (optional)
+  smtp:
+    enabled: false
+
+  # Object Storage - S3 via IRSA
+  minio:
+    enabled: false  # Disable built-in MinIO, use S3
+
+  # Configure S3 for all storage backends
+  appConfig:
+    # LFS (Large File Storage)
+    lfs:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-lfs
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # Artifacts (CI/CD)
+    artifacts:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-artifacts
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # Uploads
+    uploads:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-uploads
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # Packages
+    packages:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-packages
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # Terraform state
+    terraformState:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-terraform-state
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # CI Secure Files
+    ciSecureFiles:
+      enabled: true
+      bucket: infra-agent-dev-gitlab-ci-secure-files
+      connection:
+        secret: gitlab-rails-storage
+        key: connection
+
+    # Backups
+    backups:
+      bucket: infra-agent-dev-gitlab-backups
+      tmpBucket: infra-agent-dev-gitlab-tmp
+
+  # Registry storage
+  registry:
+    bucket: infra-agent-dev-gitlab-registry
+
+  # Service accounts with IRSA annotation
+  serviceAccount:
+    enabled: true
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/infra-agent-dev-gitlab-role  # CHANGE THIS
+
+# Istio sidecar annotations for all pods
+# Note: Namespace must have istio-injection=enabled label
+# These annotations ensure proper sidecar behavior
+gitlab:
+  gitaly:
+    annotations:
+      sidecar.istio.io/inject: "true"
+      proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    resources:
+      requests:
+        cpu: 400m
+        memory: 600Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: gp3
+
+  gitlab-shell:
+    annotations:
+      sidecar.istio.io/inject: "true"
+    minReplicas: 1
+    maxReplicas: 1
+    resources:
+      requests:
+        cpu: 0m
+        memory: 6Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
+  webservice:
+    annotations:
+      sidecar.istio.io/inject: "true"
+      proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    minReplicas: 1
+    maxReplicas: 1
+    resources:
+      requests:
+        cpu: 300m
+        memory: 1.5Gi
+      limits:
+        cpu: 1500m
+        memory: 3Gi
+    workhorse:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 100Mi
+        limits:
+          cpu: 500m
+          memory: 500Mi
+
+  sidekiq:
+    annotations:
+      sidecar.istio.io/inject: "true"
+      proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    minReplicas: 1
+    maxReplicas: 1
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1500m
+        memory: 2Gi
+
+  toolbox:
+    annotations:
+      sidecar.istio.io/inject: "true"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 350Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  migrations:
+    annotations:
+      sidecar.istio.io/inject: "true"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 200Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+  kas:
+    # GitLab Agent for Kubernetes - disable for minimal
+    enabled: false
+
+# Registry
+registry:
+  annotations:
+    sidecar.istio.io/inject: "true"
+  minReplicas: 1
+  maxReplicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  storage:
+    secret: gitlab-registry-storage
+    key: config
+
+# PostgreSQL - using bundled for simplicity
+# For production, use RDS
+postgresql:
+  install: true
+  annotations:
+    sidecar.istio.io/inject: "true"
+  primary:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: gp3
+
+# Redis - using bundled for simplicity
+# For production, use ElastiCache
+redis:
+  install: true
+  annotations:
+    sidecar.istio.io/inject: "true"
+  master:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    persistence:
+      enabled: true
+      size: 5Gi
+      storageClass: gp3
+
+# Prometheus - disable, using existing stack
+prometheus:
+  install: false
+
+# Grafana - disable, using existing stack
+grafana:
+  install: false
+
+# Certmanager - disable, using existing
+certmanager:
+  install: false
+
+# Nginx Ingress - disable, using Istio Gateway
+nginx-ingress:
+  enabled: false
+
+# GitLab Runner - minimal config
+gitlab-runner:
+  install: true
+  runners:
+    privileged: false
+    config: |
+      [[runners]]
+        [runners.kubernetes]
+          namespace = "gitlab"
+          image = "ubuntu:22.04"
+          [runners.kubernetes.pod_annotations]
+            "sidecar.istio.io/inject" = "true"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

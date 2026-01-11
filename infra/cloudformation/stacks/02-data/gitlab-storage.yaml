@@ -1,0 +1,408 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  GitLab S3 Storage and IRSA Role
+  Creates S3 buckets for GitLab storage backends and IAM role for IRSA.
+  NIST Controls: SC-28 (Encryption at Rest), AC-6 (Least Privilege)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Default: dev
+    Description: Environment name
+
+  OIDCProviderArn:
+    Type: String
+    Description: ARN of the EKS OIDC Provider for IRSA
+
+  EKSClusterName:
+    Type: String
+    Description: Name of the EKS cluster
+
+  GitLabNamespace:
+    Type: String
+    Default: gitlab
+    Description: Kubernetes namespace for GitLab
+
+  GitLabServiceAccount:
+    Type: String
+    Default: gitlab
+    Description: Kubernetes service account name for GitLab
+
+Resources:
+  # S3 Bucket for LFS (Large File Storage)
+  LFSBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-lfs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: lfs
+
+  # S3 Bucket for CI/CD Artifacts
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-artifacts-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: artifacts
+
+  # S3 Bucket for Uploads
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-uploads-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: uploads
+
+  # S3 Bucket for Packages
+  PackagesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-packages-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: packages
+
+  # S3 Bucket for Container Registry
+  RegistryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-registry-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: registry
+
+  # S3 Bucket for Terraform State
+  TerraformStateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-terraform-state-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: terraform-state
+
+  # S3 Bucket for CI Secure Files
+  CISecureFilesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-ci-secure-files-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: ci-secure-files
+
+  # S3 Bucket for Backups
+  BackupsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-backups-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+          - Id: ExpireOldBackups
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: backups
+
+  # S3 Bucket for Temp files
+  TmpBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-gitlab-tmp-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTmpFiles
+            Status: Enabled
+            ExpirationInDays: 1
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+        - Key: Purpose
+          Value: tmp
+
+  # IAM Role for GitLab (IRSA)
+  GitLabRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-gitlab-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub '${OIDCProviderArn}:sub': !Sub 'system:serviceaccount:${GitLabNamespace}:${GitLabServiceAccount}'
+                !Sub '${OIDCProviderArn}:aud': 'sts.amazonaws.com'
+      Policies:
+        - PolicyName: GitLabS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListBuckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt LFSBucket.Arn
+                  - !GetAtt ArtifactsBucket.Arn
+                  - !GetAtt UploadsBucket.Arn
+                  - !GetAtt PackagesBucket.Arn
+                  - !GetAtt RegistryBucket.Arn
+                  - !GetAtt TerraformStateBucket.Arn
+                  - !GetAtt CISecureFilesBucket.Arn
+                  - !GetAtt BackupsBucket.Arn
+                  - !GetAtt TmpBucket.Arn
+              - Sid: ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub '${LFSBucket.Arn}/*'
+                  - !Sub '${ArtifactsBucket.Arn}/*'
+                  - !Sub '${UploadsBucket.Arn}/*'
+                  - !Sub '${PackagesBucket.Arn}/*'
+                  - !Sub '${RegistryBucket.Arn}/*'
+                  - !Sub '${TerraformStateBucket.Arn}/*'
+                  - !Sub '${CISecureFilesBucket.Arn}/*'
+                  - !Sub '${BackupsBucket.Arn}/*'
+                  - !Sub '${TmpBucket.Arn}/*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: gitlab
+
+Outputs:
+  GitLabRoleArn:
+    Description: ARN of the GitLab IAM Role for IRSA
+    Value: !GetAtt GitLabRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-role-arn'
+
+  LFSBucketName:
+    Description: S3 bucket for LFS
+    Value: !Ref LFSBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-lfs-bucket'
+
+  ArtifactsBucketName:
+    Description: S3 bucket for artifacts
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-artifacts-bucket'
+
+  UploadsBucketName:
+    Description: S3 bucket for uploads
+    Value: !Ref UploadsBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-uploads-bucket'
+
+  PackagesBucketName:
+    Description: S3 bucket for packages
+    Value: !Ref PackagesBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-packages-bucket'
+
+  RegistryBucketName:
+    Description: S3 bucket for container registry
+    Value: !Ref RegistryBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-registry-bucket'
+
+  TerraformStateBucketName:
+    Description: S3 bucket for Terraform state
+    Value: !Ref TerraformStateBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-terraform-state-bucket'
+
+  BackupsBucketName:
+    Description: S3 bucket for backups
+    Value: !Ref BackupsBucket
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-gitlab-backups-bucket'
