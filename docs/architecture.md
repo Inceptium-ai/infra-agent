@@ -136,6 +136,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | Grafana | 12.3 | Visualization |
 | Prometheus | 3.8 | Metrics scraping |
 | Mimir | 3.0 | Metrics long-term storage (S3-backed) |
+| Kafka (Mimir) | 3.9 | Write-ahead log for Mimir ingest durability |
 | Kiali | 2.20 | Service mesh traffic visualization |
 | Trivy Operator | 0.29 | In-cluster vulnerability scanning |
 | Velero | 1.17 | Backup/restore |
@@ -240,10 +241,25 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 | node-exporter | 1 per node | 10m | 32Mi | 9100 (Metrics) |
 | kube-state-metrics | 1 | 10m | 64Mi | 8080 (Metrics) |
 
-**Data Flow:**
+**Data Flow (with Kafka WAL):**
 ```
-[Kubernetes Pods/Nodes] → [Prometheus SCRAPES] → [Remote Write] → [Mimir STORES]
+[Kubernetes Pods/Nodes] → [Prometheus SCRAPES] → [Remote Write] → [Mimir Distributor]
+                                                                          │
+                                                                          ▼
+                                                                    [Kafka WAL]
+                                                                          │
+                                                                          ▼
+                                                                  [Mimir Ingester]
+                                                                          │
+                                                                          ▼
+                                                                    [S3 Storage]
 ```
+
+**Why Kafka WAL (Write-Ahead Log):**
+- **Durability**: If an ingester crashes, metrics in Kafka survive and replay
+- **Decoupling**: Distributors don't block waiting for slow ingesters
+- **Scaling**: Add/remove ingesters without data loss during rebalancing
+- **NIST AU-9**: Protection of audit information through WAL durability
 
 **Health Checks:**
 - Readiness: `GET /-/ready` on port 9090
@@ -253,7 +269,61 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 
 ---
 
-#### 3b. Kiali (Service Mesh Visualization)
+#### 3b. Mimir with Kafka (Metrics Storage)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `grafana/mimir-distributed` |
+| **Namespace** | `observability` |
+| **Purpose** | Long-term metrics storage with Kafka WAL for durability |
+| **NIST Controls** | AU-2 (Audit events), AU-9 (Audit protection), AU-11 (Retention) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| kafka | 1 | 500m | 1Gi | 9092 (Kafka) |
+| distributor | 2 | 100m | 256Mi | 8080 (HTTP) |
+| ingester | 2 | 100m | 512Mi | 8080 (HTTP) |
+| querier | 2 | 100m | 256Mi | 8080 (HTTP) |
+| query-frontend | 1 | 50m | 128Mi | 8080 (HTTP) |
+| store-gateway | 1 | 100m | 256Mi | 8080 (HTTP) |
+| compactor | 1 | 100m | 256Mi | 8080 (HTTP) |
+| nginx (gateway) | 2 | 50m | 64Mi | 80 (HTTP) |
+
+**Kafka Configuration:**
+```yaml
+kafka:
+  enabled: true
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: gp3
+
+mimir:
+  structuredConfig:
+    ingest_storage:
+      enabled: true
+      kafka:
+        address: mimir-kafka.observability.svc.cluster.local:9092
+```
+
+**Storage:**
+| Type | Backend | Bucket |
+|------|---------|--------|
+| Blocks | S3 | `infra-agent-{env}-mimir-{account}` |
+| Ruler | S3 | `infra-agent-{env}-mimir-{account}` |
+| Alertmanager | S3 | `infra-agent-{env}-mimir-{account}` |
+
+**Health Checks:**
+- Readiness: `GET /ready` on port 8080
+- Liveness: `GET /ready` on port 8080
+
+**Dependencies:** S3 bucket (CloudFormation), IRSA role, Kafka (bundled)
+
+---
+
+#### 3c. Kiali (Service Mesh Visualization)
 
 | Property | Value |
 |----------|-------|
@@ -439,6 +509,7 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 | kiali | istio-system | 20001 | 20001 | HTTP |
 | loki-gateway | observability | 3100 | 3100 | HTTP |
 | mimir-gateway | observability | 80 | 80 | HTTP |
+| mimir-kafka | observability | 9092 | 9092 | Kafka |
 | prometheus-server | observability | 80 | 9090 | HTTP |
 | grafana | observability | 3000 | 3000 | HTTP |
 | trivy-operator | trivy-system | 8080 | 8080 | HTTP |
@@ -741,12 +812,24 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 │                          │                   │                                               │
 │                          │            ┌──────▼──────┐                                       │
 │                          │            │   Mimir     │                                       │
-│                          │            │ (Storage)   │                                       │
+│                          │            │ Distributor │                                       │
 │                          │            └──────┬──────┘                                       │
 │                          │                   │                                               │
-│                          └───────────────────┼───────────────────┘                          │
-│                                              ▼                                               │
-│                                       ┌─────────────┐                                       │
+│                          │            ┌──────▼──────┐                                       │
+│                          │            │ Kafka (WAL) │                                       │
+│                          │            └──────┬──────┘                                       │
+│                          │                   │                                               │
+│                          │            ┌──────▼──────┐                                       │
+│                          │            │   Mimir     │                                       │
+│                          │            │  Ingester   │                                       │
+│                          │            └──────┬──────┘                                       │
+│                          │                   │                                               │
+│                          └─────────►  ┌──────▼──────┐  ◄─────────────────┘                  │
+│                                       │     S3      │                                       │
+│                                       │  (Storage)  │                                       │
+│                                       └──────┬──────┘                                       │
+│                                              │                                               │
+│                                       ┌──────▼──────┐                                       │
 │                                       │   Grafana   │                                       │
 │                                       │ (Dashboard) │                                       │
 │                                       └─────────────┘                                       │
@@ -820,3 +903,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.3 | 2025-01-04 | AI Agent | Added Compute Requirements section with EKS add-on resource estimates |
 | 1.4 | 2025-01-06 | AI Agent | Replaced Tempo with Prometheus+Kiali for metrics scraping and traffic visualization |
 | 1.5 | 2025-01-06 | AI Agent | Corrected storage matrix (Tempo→Mimir), clarified nodes in 100.64.x.x subnets (no VPC CNI custom networking needed) |
+| 1.6 | 2025-01-10 | AI Agent | Added Kafka WAL documentation for Mimir, updated data flow diagrams, added Mimir component details |

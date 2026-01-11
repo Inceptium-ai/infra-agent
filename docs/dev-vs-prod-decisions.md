@@ -143,32 +143,6 @@ Mimir 3.0 (With Kafka - Current Config):
 | **Exactly-Once Semantics** | Prevents duplicate metrics |
 | **NIST AU-9** | Protection of audit information through WAL durability |
 
-### Known Issues & Mitigations
-
-| Issue | Mitigation |
-|-------|------------|
-| **PVC AZ Affinity** | When nodes scale to 0 and back, delete stuck Kafka PVC to recreate in new AZ |
-| **Memory Requirements** | Kafka needs ~1GB+ RAM - ensure nodes have capacity |
-| **Scale-to-Zero** | After scaling nodes back up, may need to restart Kafka pod |
-
-### Recovery Procedure (When Kafka Gets Stuck)
-
-```bash
-# 1. Delete stuck Kafka StatefulSet and PVC
-kubectl delete statefulset mimir-kafka -n observability
-kubectl delete pvc kafka-data-mimir-kafka-0 -n observability
-
-# 2. Trigger Helm to recreate
-helm upgrade mimir grafana/mimir-distributed \
-  -n observability \
-  -f infra/helm/values/lgtm/mimir-values.yaml
-
-# 3. Restart dependent pods
-kubectl delete pod -n observability -l app.kubernetes.io/component=distributor
-kubectl delete pod -n observability -l app.kubernetes.io/component=ingester
-kubectl delete pod -n observability -l app.kubernetes.io/component=querier
-```
-
 ### Dev Alternative (If Prod Parity Not Required)
 
 To disable Kafka for simpler dev environment:
@@ -412,3 +386,4 @@ For teams wanting OSS compatibility with AWS management:
 |---------|------|--------|---------|
 | 1.0 | 2025-01-10 | AI Agent | Initial dev vs prod analysis with Kafka recommendation |
 | 1.1 | 2025-01-10 | AI Agent | Added three-way cost comparison (AWS vs Prod vs Dev), AMP/AMG pricing |
+| 1.2 | 2025-01-10 | AI Agent | Moved Kafka details to architecture.md, removed trade-offs from this doc |
