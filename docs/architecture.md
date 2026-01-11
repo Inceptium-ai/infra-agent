@@ -1078,36 +1078,38 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 │                   │  Resources  │     │   Pods      │                                       │
 │                   └─────────────┘     └──────┬──────┘                                       │
 │                                              │                                               │
-│                          ┌───────────────────┼───────────────────┐                          │
-│                          ▼                   ▼                   ▼                          │
-│                   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                  │
-│                   │    Loki     │     │ Prometheus  │     │   Kiali     │                  │
-│                   │   (Logs)    │     │  (Scraper)  │     │(Traffic UI) │                  │
-│                   └──────┬──────┘     └──────┬──────┘     └─────────────┘                  │
-│                          │                   │                                               │
-│                          │            ┌──────▼──────┐                                       │
-│                          │            │   Mimir     │                                       │
-│                          │            │ Distributor │                                       │
-│                          │            └──────┬──────┘                                       │
-│                          │                   │                                               │
-│                          │            ┌──────▼──────┐                                       │
-│                          │            │ Kafka (WAL) │                                       │
-│                          │            └──────┬──────┘                                       │
-│                          │                   │                                               │
-│                          │            ┌──────▼──────┐                                       │
-│                          │            │   Mimir     │                                       │
-│                          │            │  Ingester   │                                       │
-│                          │            └──────┬──────┘                                       │
-│                          │                   │                                               │
-│                          └─────────►  ┌──────▼──────┐  ◄─────────────────┘                  │
-│                                       │     S3      │                                       │
-│                                       │  (Storage)  │                                       │
-│                                       └──────┬──────┘                                       │
-│                                              │                                               │
-│                                       ┌──────▼──────┐                                       │
-│                                       │   Grafana   │                                       │
-│                                       │ (Dashboard) │                                       │
-│                                       └─────────────┘                                       │
+│           ┌──────────────┬──────────────┬──────────────┐                                   │
+│           ▼              ▼              ▼              ▼                                   │
+│     ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐                            │
+│     │   Loki    │  │Prometheus │  │   Tempo   │  │   Kiali   │                            │
+│     │  (Logs)   │  │ (Scraper) │  │ (Traces)  │  │(Traffic)  │                            │
+│     └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └───────────┘                            │
+│           │              │              │                                                  │
+│           │        ┌─────▼─────┐        │                                                  │
+│           │        │   Mimir   │        │                                                  │
+│           │        │Distributor│        │                                                  │
+│           │        └─────┬─────┘        │                                                  │
+│           │              │              │                                                  │
+│           │        ┌─────▼─────┐        │                                                  │
+│           │        │Kafka (WAL)│        │                                                  │
+│           │        └─────┬─────┘        │                                                  │
+│           │              │              │                                                  │
+│           │        ┌─────▼─────┐        │                                                  │
+│           │        │   Mimir   │        │                                                  │
+│           │        │ Ingester  │        │                                                  │
+│           │        └─────┬─────┘        │                                                  │
+│           │              │              │                                                  │
+│           └──────────────┼──────────────┘                                                  │
+│                          ▼                                                                 │
+│                   ┌─────────────┐                                                          │
+│                   │     S3      │                                                          │
+│                   │  (Storage)  │                                                          │
+│                   └──────┬──────┘                                                          │
+│                          │                                                                 │
+│                   ┌──────▼──────┐                                                          │
+│                   │   Grafana   │                                                          │
+│                   │ (Dashboard) │                                                          │
+│                   └─────────────┘                                                          │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1159,6 +1161,7 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | Grafana | 12.x | Unified observability |
 | Prometheus | 3.8 | Metrics scraping |
 | Mimir | 3.0 | Long-term metrics storage |
+| Tempo | 2.6 | Distributed tracing |
 | Kiali | 2.20 | Traffic visualization |
 | Trivy Operator | 0.29 | In-cluster scanning |
 | Velero | 1.17 | Backup/restore |
@@ -1181,3 +1184,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.6 | 2025-01-10 | AI Agent | Added Kafka WAL documentation for Mimir, updated data flow diagrams, added Mimir component details |
 | 1.7 | 2025-01-10 | AI Agent | Replaced LGTM references with "Observability Stack" (Tempo removed) |
 | 1.8 | 2025-01-10 | AI Agent | Added Tempo back for distributed tracing, added comprehensive flow diagrams for all add-ons |
+| 1.9 | 2025-01-10 | AI Agent | Added Tempo to Version Information table, updated main data flow diagram to include Tempo |
