@@ -1030,25 +1030,28 @@ When deploying the observability stack, verify all components are included:
 ## 32. Tempo vs Kiali - Know What You Actually Need
 
 **Issue:**
-Deployed Tempo for "traffic visualization" but Tempo provides distributed tracing (following individual requests), NOT traffic flow visualization.
+Initially deployed Tempo expecting "traffic visualization" but Tempo provides distributed tracing (following individual requests), NOT traffic flow visualization. Removed it, then realized we still need distributed tracing for debugging latency issues.
 
 **What Each Tool Does:**
-| Tool | Purpose | Visual Output |
-|------|---------|---------------|
-| **Tempo/Jaeger** | Distributed tracing | Waterfall diagram of ONE request through services |
-| **Kiali** | Service mesh visualization | Real-time traffic graph with animated flows |
+| Tool | Purpose | Visual Output | When to Use |
+|------|---------|---------------|-------------|
+| **Tempo** | Distributed tracing | Waterfall diagram of ONE request through services | "Why was this request slow?" |
+| **Kiali** | Service mesh visualization | Real-time traffic graph with animated flows | "How does traffic flow between services?" |
 
-**The Real Question:**
-- "I want to see how requests flow through my microservices" → **Kiali**
-- "I want to debug latency in a specific request" → **Tempo/Jaeger**
+**Key Insight:**
+These tools serve DIFFERENT purposes - you need BOTH for complete observability:
+- Kiali shows the forest (all traffic patterns)
+- Tempo shows one tree (single request path)
 
-**Fix:**
-Removed Tempo, deployed Kiali for traffic visualization needs.
+**Resolution:**
+Deploy BOTH tools:
+- Kiali for traffic visualization and mesh topology
+- Tempo for distributed tracing and latency debugging
 
 **Lesson:**
 Before deploying observability tools, clearly define what you want to SEE:
 - Traffic flow topology → Kiali
-- Request tracing → Tempo/Jaeger
+- Request tracing → Tempo
 - Log aggregation → Loki
 - Metrics → Prometheus/Mimir
 
@@ -1111,24 +1114,25 @@ Check the Prometheus Helm chart's default values.yaml before adding extraScrapeC
 
 **Issue:**
 Initial deployment had too many components without clear justification:
-- Tempo (not needed for traffic visualization)
 - Mimir without scraper (useless alone)
+- Confusion about Tempo vs Kiali use cases
 - Multiple overlapping tools
 
 **Resolution Process:**
 1. Listed ALL deployed components
-2. Asked "what happens without it?" for each
+2. Asked "what problem does it solve?" for each
 3. Identified actual need vs assumed need
-4. Removed unnecessary components
+4. Clarified tool purposes (Tempo for tracing, Kiali for traffic viz)
 
-**Final Simplified Stack:**
+**Final Stack:**
 | Component | Need | Justification |
 |-----------|------|---------------|
 | Loki | Yes | Centralized logs - no alternative |
 | Grafana | Yes | Single pane of glass for dashboards |
 | Prometheus | Yes | Metrics scraping → pushes to Mimir |
 | Mimir | Yes | Long-term metrics (S3-backed, NIST AU-11) |
-| Kiali | Yes | Traffic flow visualization (replaces Tempo for this use case) |
+| Tempo | Yes | Distributed tracing for latency debugging |
+| Kiali | Yes | Traffic flow visualization |
 | Istio | Yes | mTLS, NIST SC-8 requirement |
 | Trivy | Yes | Vulnerability scanning, NIST SI-2 |
 | Velero | Yes | Backup/restore, NIST CP-9 |

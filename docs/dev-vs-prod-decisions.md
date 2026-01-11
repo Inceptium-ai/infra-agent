@@ -188,15 +188,15 @@ This section compares our current self-managed observability stack against using
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SELF-MANAGED (Current)                        │
 ├─────────────────────────────────────────────────────────────────┤
-│  METRICS:   Prometheus → Mimir → S3                             │
-│  LOGS:      Fluent Bit → Loki → S3                              │
-│  TRACES:    (Not deployed - removed Tempo)                       │
+│  METRICS:   Prometheus → Mimir → Kafka → S3                     │
+│  LOGS:      Promtail → Loki → S3                                │
+│  TRACES:    Istio → Tempo → S3                                  │
 │  DASHBOARDS: Grafana                                             │
 │  TRAFFIC:   Kiali (Istio visualization)                         │
 │  COST:      Kubecost                                             │
 │  SECURITY:  Trivy Operator                                       │
 ├─────────────────────────────────────────────────────────────────┤
-│  Pods: ~40        Storage: S3 + EBS        Cost: ~$100/mo*      │
+│  Pods: ~42        Storage: S3 + EBS        Cost: ~$115/mo*      │
 │  * Infrastructure cost only, not including compute              │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -234,7 +234,7 @@ This section compares our current self-managed observability stack against using
 | **Dashboards** | Grafana (powerful, customizable) | CloudWatch Dashboards (limited) | CloudWatch |
 | **Alerting** | Grafana Alerting | CloudWatch Alarms | CloudWatch |
 | **Traffic Visualization** | Kiali (real-time Istio mesh) | None (no equivalent) | Skip |
-| **Distributed Tracing** | (Removed Tempo) | X-Ray ($5/million traces) | X-Ray |
+| **Distributed Tracing** | Tempo (S3-backed) | X-Ray ($5/million traces) | X-Ray or skip |
 | **Cost Analysis** | Kubecost (K8s-native) | AWS Cost Explorer (account-level) | Cost Explorer |
 | **Security Scanning** | Trivy Operator (continuous) | ECR scanning + Inspector | ECR basic |
 | **Setup Complexity** | High (many Helm charts) | Low (enable features) | Low |
@@ -251,7 +251,7 @@ This section compares our current self-managed observability stack against using
 | **Compute Nodes** | $110 (2x t3a.medium) | $330 (3x t3a.xlarge) | $110 (2x t3a.medium) | Fewer pods = smaller nodes |
 | **NAT Gateways** | $35 (1 AZ) | $100 (3 AZ) | $35 (1 AZ) | HA requires multi-AZ |
 | **EBS Storage** | $10 | $50 | $20 | PVCs for stateful workloads |
-| **S3 Storage** | $0 | $20 | $5 | Loki/Mimir/Velero buckets |
+| **S3 Storage** | $0 | $25 | $7 | Loki/Mimir/Tempo/Velero buckets |
 | | | | | |
 | **--- Observability ---** | | | | |
 | **Metrics Storage** | $50-150 (CW Metrics) | $5 (Mimir→S3) | $0 (Prometheus only) | CW: $0.30/metric/mo |
@@ -261,7 +261,7 @@ This section compares our current self-managed observability stack against using
 | **Log Queries** | $5-20 (CW Insights) | $0 (LogQL) | $0 (LogQL) | CW: $0.005/GB scanned |
 | **Dashboards** | $9 (3 dashboards) | $0 (Grafana) | $0 (Grafana) | CW: $3/dashboard/mo |
 | **Alerts** | $5 (50 alarms) | $0 (Grafana) | $0 (Grafana) | CW: $0.10/alarm/mo |
-| **Tracing** | $5-20 (X-Ray) | $0 (not deployed) | $0 | X-Ray: $5/million traces |
+| **Tracing** | $5-20 (X-Ray) | $5 (Tempo→S3) | $2 (Tempo→S3) | X-Ray: $5/million traces |
 | | | | | |
 | **--- Optional Tools ---** | | | | |
 | **Traffic Viz (Kiali)** | N/A | $0 (included) | $0 or skip | No AWS equivalent |
@@ -270,9 +270,9 @@ This section compares our current self-managed observability stack against using
 | **Backup (Velero)** | $0 (not needed) | $5 (S3) | $0 (skip) | AWS Backup alternative |
 | | | | | |
 | **--- TOTALS ---** | | | | |
-| **Infrastructure** | **$228** | **$573** | **$243** | Nodes + NAT + Storage |
-| **Observability** | **$134-353** | **$10** | **$2** | Variable vs fixed |
-| **GRAND TOTAL** | **$362-581/mo** | **$583/mo** | **$245/mo** | |
+| **Infrastructure** | **$228** | **$578** | **$245** | Nodes + NAT + Storage |
+| **Observability** | **$134-353** | **$15** | **$4** | Variable vs fixed |
+| **GRAND TOTAL** | **$362-581/mo** | **$593/mo** | **$249/mo** | |
 
 ### Cost Comparison Summary
 
@@ -284,7 +284,7 @@ This section compares our current self-managed observability stack against using
 │  AWS MANAGED          ████████████████████████████████░░░░  $362-581/mo     │
 │  (CW + Container Insights)    Variable based on log/metric volume           │
 │                                                                              │
-│  SELF-MANAGED PROD    ████████████████████████████████████  $583/mo         │
+│  SELF-MANAGED PROD    ████████████████████████████████████  $593/mo         │
 │  (Current Config)             Fixed, predictable costs                      │
 │                                                                              │
 │  SELF-MANAGED DEV     ████████████░░░░░░░░░░░░░░░░░░░░░░░░  $245/mo         │
