@@ -72,7 +72,7 @@ Infrastructure is deployed in the following order to satisfy dependencies:
 ├─────────────────────────────────────────────────────────────────┤
 │  7. Helm Releases                                               │
 │     ├── Istio (service mesh)                                    │
-│     ├── Observability Stack (Loki, Grafana, Mimir, Prometheus)  │
+│     ├── Observability Stack (Loki, Grafana, Tempo, Mimir, Prometheus) │
 │     ├── Trivy Operator (security scanning)                      │
 │     ├── Velero (backups)                                        │
 │     ├── Kubecost (cost management)                              │
@@ -1019,6 +1019,12 @@ helm upgrade --install prometheus prometheus-community/prometheus \
 helm upgrade --install mimir grafana/mimir-distributed \
   -n observability \
   -f infra/helm/values/lgtm/mimir-values.yaml \
+  --wait
+
+# Install Tempo (Distributed Tracing)
+helm upgrade --install tempo grafana/tempo \
+  -n observability \
+  -f infra/helm/values/lgtm/tempo-values.yaml \
   --wait
 
 # Install Grafana (Dashboards)

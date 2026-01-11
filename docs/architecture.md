@@ -9,7 +9,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 - NIST 800-53 R5 compliance validation and enforcement
 - Zero Trust network architecture with non-routable pod subnets
 - mTLS encryption via Istio service mesh
-- Comprehensive observability stack (Loki, Grafana, Mimir, Prometheus, Kiali)
+- Comprehensive observability stack (Loki, Grafana, Tempo, Mimir, Prometheus, Kiali)
 - AI-driven drift detection and remediation
 - Blue/Green deployment with automated rollback
 
@@ -137,6 +137,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | Prometheus | 3.8 | Metrics scraping |
 | Mimir | 3.0 | Metrics long-term storage (S3-backed) |
 | Kafka (Mimir) | 3.9 | Write-ahead log for Mimir ingest durability |
+| Tempo | 2.6 | Distributed tracing (S3-backed) |
 | Kiali | 2.20 | Service mesh traffic visualization |
 | Trivy Operator | 0.29 | In-cluster vulnerability scanning |
 | Velero | 1.17 | Backup/restore |
@@ -323,7 +324,55 @@ mimir:
 
 ---
 
-#### 3c. Kiali (Service Mesh Visualization)
+#### 3c. Tempo (Distributed Tracing)
+
+| Property | Value |
+|----------|-------|
+| **Chart** | `grafana/tempo` |
+| **Namespace** | `observability` |
+| **Purpose** | Distributed tracing for debugging request latency across microservices |
+| **NIST Controls** | AU-2 (Audit events), AU-6 (Audit review), AU-12 (Audit generation) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| tempo | 2 | 100m | 256Mi | 3200 (HTTP), 4317 (OTLP gRPC), 4318 (OTLP HTTP) |
+
+**Data Flow:**
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   App Pod   │───►│   Istio     │───►│   Tempo     │───►│     S3      │
+│  (request)  │    │   Sidecar   │    │  (ingest)   │    │  (storage)  │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                         │
+                   Generates trace
+                   context headers
+                   (B3, W3C)
+```
+
+**Trace Receivers:**
+| Protocol | Port | Use Case |
+|----------|------|----------|
+| OTLP gRPC | 4317 | OpenTelemetry native apps |
+| OTLP HTTP | 4318 | OpenTelemetry HTTP clients |
+| Jaeger Thrift | 14268 | Legacy Jaeger clients |
+| Jaeger gRPC | 14250 | Jaeger agents |
+| Zipkin | 9411 | Zipkin-instrumented apps |
+
+**Storage:**
+| Type | Backend | Bucket |
+|------|---------|--------|
+| Traces | S3 | `infra-agent-{env}-tempo-{account}` |
+
+**Health Checks:**
+- Readiness: `GET /ready` on port 3200
+- Liveness: `GET /ready` on port 3200
+
+**Dependencies:** S3 bucket (CloudFormation), IRSA role
+
+---
+
+#### 3d. Kiali (Service Mesh Visualization)
 
 | Property | Value |
 |----------|-------|
@@ -508,6 +557,7 @@ mimir:
 | istio-ingress | istio-system | 80, 443 | 8080, 8443 | HTTP, HTTPS |
 | kiali | istio-system | 20001 | 20001 | HTTP |
 | loki-gateway | observability | 3100 | 3100 | HTTP |
+| tempo | observability | 3200, 4317, 4318 | 3200, 4317, 4318 | HTTP, gRPC |
 | mimir-gateway | observability | 80 | 80 | HTTP |
 | mimir-kafka | observability | 9092 | 9092 | Kafka |
 | prometheus-server | observability | 80 | 9090 | HTTP |
@@ -516,6 +566,231 @@ mimir:
 | velero | velero | 8085 | 8085 | HTTP |
 | kubecost | kubecost | 9090 | 9090 | HTTP |
 | headlamp | headlamp | 4466 | 4466 | HTTP |
+
+---
+
+## Add-on Data Flow Diagrams
+
+This section provides detailed data flow diagrams for each add-on category.
+
+### 1. Logging Flow (Loki)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              LOGGING PIPELINE                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ App Pod  │    │ Promtail │    │  Loki    │    │    S3    │    │ Grafana  │  │
+│  │ (stdout) │───►│ (scrape) │───►│ (ingest) │───►│ (chunks) │◄───│ (query)  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │                                │                              │         │
+│       │                                │                              │         │
+│  Writes to          Scrapes from       Compresses &          Runs LogQL        │
+│  container          /var/log/pods      indexes logs          queries           │
+│  stdout/stderr                                                                  │
+│                                                                                  │
+│  NIST: AU-2 (Audit Events), AU-9 (Protection), AU-11 (Retention)               │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2. Metrics Flow (Prometheus → Mimir)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              METRICS PIPELINE                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ App Pod  │    │Prometheus│    │  Mimir   │    │  Kafka   │    │  Mimir   │  │
+│  │ /metrics │◄───│ (scrape) │───►│Distributor───►│  (WAL)   │───►│ Ingester │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│                                                                        │        │
+│                                                                        ▼        │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ Grafana  │◄───│  Mimir   │◄───│  Mimir   │◄───│    S3    │◄───│  Mimir   │  │
+│  │ (query)  │    │ Querier  │    │Query-FE  │    │ (blocks) │    │Compactor │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│                                                                                  │
+│  NIST: AU-2 (Audit Events), AU-9 (WAL Durability), SI-4 (Monitoring)           │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3. Tracing Flow (Tempo)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              TRACING PIPELINE                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ App Pod  │    │  Istio   │    │  Tempo   │    │    S3    │    │ Grafana  │  │
+│  │(request) │───►│ Sidecar  │───►│ (ingest) │───►│ (traces) │◄───│ (query)  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │               │                                               │         │
+│       │               │                                               │         │
+│  App makes       Envoy injects      Receives traces      View trace            │
+│  HTTP call       trace headers      via OTLP/Jaeger      waterfall             │
+│                  (B3, W3C)          protocols            diagrams              │
+│                                                                                  │
+│  Trace Context: traceparent: 00-{trace-id}-{span-id}-01                        │
+│                                                                                  │
+│  NIST: AU-2 (Audit Events), AU-6 (Audit Review), AU-12 (Audit Generation)      │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4. Traffic Visualization Flow (Kiali)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         TRAFFIC VISUALIZATION                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │  Istio   │    │Prometheus│    │  Kiali   │    │  Browser │    │ Operator │  │
+│  │ Sidecars │───►│ (scrape) │───►│ (query)  │───►│   (UI)   │───►│  (view)  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │                                               │                         │
+│       │                                               │                         │
+│  Envoy exports      Prometheus         Kiali         Real-time                 │
+│  istio_* metrics    stores metrics     queries       traffic graph             │
+│  (request count,    (short-term)       Prometheus    with animations           │
+│  latency, errors)                      for topology                            │
+│                                                                                  │
+│  NIST: AU-6 (Audit Review), SI-4 (System Monitoring)                           │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5. Backup Flow (Velero)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              BACKUP PIPELINE                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  SCHEDULED BACKUP:                                                               │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │  Velero  │    │   K8s    │    │  Velero  │    │    S3    │    │ EBS Snap │  │
+│  │ Schedule │───►│   API    │───►│  Server  │───►│ (manifests)───►│  (PVCs)  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│                                                                                  │
+│  RESTORE:                                                                        │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ Operator │    │  Velero  │    │    S3    │    │  Velero  │    │   K8s    │  │
+│  │ (trigger)│───►│  Restore │───►│ (fetch)  │───►│  Server  │───►│  Create  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│                                                                                  │
+│  Schedule: Daily 2AM (7d retention), Weekly Sunday (30d retention)              │
+│                                                                                  │
+│  NIST: CP-9 (Backup), CP-10 (Recovery), CP-6 (Alternate Storage)               │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6. Security Scanning Flow (Trivy)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           SECURITY SCANNING                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │   Pod    │    │  Trivy   │    │   Trivy  │    │   K8s    │    │ Grafana  │  │
+│  │ Created  │───►│ Operator │───►│  Scanner │───►│   CRDs   │───►│Dashboard │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │               │                │               │                        │
+│       │               │                │               │                        │
+│  New pod          Watches for      Scans image    VulnerabilityReport          │
+│  scheduled        pod events       for CVEs       ConfigAuditReport            │
+│                                                   RbacAssessmentReport          │
+│                                                                                  │
+│  Scan Types: Vulnerabilities, ConfigAudit, RBAC, ExposedSecrets                │
+│                                                                                  │
+│  NIST: SI-2 (Flaw Remediation), RA-5 (Vulnerability Scanning), CM-8 (Inventory)│
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7. Cost Management Flow (Kubecost)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           COST MANAGEMENT                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │Prometheus│    │ Kubecost │    │  AWS     │    │ Kubecost │    │ Operator │  │
+│  │ Metrics  │───►│Cost Model│───►│ Pricing  │───►│   UI     │───►│  (view)  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │               │                               │                         │
+│       │               │                               │                         │
+│  CPU, memory      Correlates       Applies AWS    Shows cost by               │
+│  usage metrics    usage with       on-demand      namespace, pod,             │
+│  per pod          resources        pricing        deployment                   │
+│                                                                                  │
+│  Features: Cost allocation, idle detection (72hr), right-sizing recommendations│
+│                                                                                  │
+│  NIST: PM-3 (Resource Management)                                               │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 8. Service Mesh Flow (Istio)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              SERVICE MESH                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ Service  │    │  Istio   │    │  Istio   │    │  Istio   │    │ Service  │  │
+│  │    A     │───►│ Sidecar  │═══►│ Sidecar  │───►│ Sidecar  │───►│    B     │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│                       │               ║               │                         │
+│                       │          mTLS Encrypted       │                         │
+│                       │          (SPIFFE certs)       │                         │
+│                       │                               │                         │
+│                       ▼                               ▼                         │
+│                  ┌──────────┐                   ┌──────────┐                    │
+│                  │  istiod  │                   │Prometheus│                    │
+│                  │(control) │                   │ (metrics)│                    │
+│                  └──────────┘                   └──────────┘                    │
+│                                                                                  │
+│  Features: mTLS, traffic routing, circuit breaking, retries, rate limiting     │
+│                                                                                  │
+│  NIST: SC-8 (Transmission Confidentiality), SC-7 (Boundary Protection)         │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9. Unified Observability Dashboard (Grafana)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         GRAFANA DATA SOURCES                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│                              ┌──────────────┐                                   │
+│                              │   GRAFANA    │                                   │
+│                              │  Dashboard   │                                   │
+│                              └──────┬───────┘                                   │
+│                                     │                                           │
+│            ┌────────────────────────┼────────────────────────┐                 │
+│            │                        │                        │                 │
+│            ▼                        ▼                        ▼                 │
+│     ┌─────────────┐          ┌─────────────┐          ┌─────────────┐         │
+│     │    Loki     │          │    Mimir    │          │    Tempo    │         │
+│     │   (logs)    │          │  (metrics)  │          │  (traces)   │         │
+│     │   LogQL     │          │   PromQL    │          │   TraceQL   │         │
+│     └─────────────┘          └─────────────┘          └─────────────┘         │
+│            │                        │                        │                 │
+│            ▼                        ▼                        ▼                 │
+│     ┌─────────────┐          ┌─────────────┐          ┌─────────────┐         │
+│     │     S3      │          │     S3      │          │     S3      │         │
+│     │   (chunks)  │          │  (blocks)   │          │  (traces)   │         │
+│     └─────────────┘          └─────────────┘          └─────────────┘         │
+│                                                                                  │
+│  Correlation: Click log → see trace → see metrics at that time                 │
+│                                                                                  │
+│  NIST: AU-7 (Audit Reduction), SI-4 (System Monitoring)                        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -905,3 +1180,4 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.5 | 2025-01-06 | AI Agent | Corrected storage matrix (Tempo→Mimir), clarified nodes in 100.64.x.x subnets (no VPC CNI custom networking needed) |
 | 1.6 | 2025-01-10 | AI Agent | Added Kafka WAL documentation for Mimir, updated data flow diagrams, added Mimir component details |
 | 1.7 | 2025-01-10 | AI Agent | Replaced LGTM references with "Observability Stack" (Tempo removed) |
+| 1.8 | 2025-01-10 | AI Agent | Added Tempo back for distributed tracing, added comprehensive flow diagrams for all add-ons |

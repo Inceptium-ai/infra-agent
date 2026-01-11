@@ -20,7 +20,7 @@ class K8sAgent(BaseAgent):
     - Execute kubectl commands
     - Manage Helm chart deployments
     - Configure Istio service mesh
-    - Deploy observability stack (Loki, Grafana, Mimir, Prometheus, Kiali)
+    - Deploy observability stack (Loki, Grafana, Tempo, Mimir, Prometheus, Kiali)
     """
 
     def __init__(self, **kwargs):
@@ -215,8 +215,19 @@ class K8sAgent(BaseAgent):
         )
         results.append(mimir_result)
 
-        # Step 4: Install Grafana (Dashboards)
-        results.append("\nStep 4: Installing Grafana (Dashboards)...")
+        # Step 4: Install Tempo (Distributed Tracing)
+        results.append("\nStep 4: Installing Tempo (Distributed Tracing)...")
+        tempo_result = self._helm_install_chart(
+            release_name="tempo",
+            chart="tempo",
+            repo="https://grafana.github.io/helm-charts",
+            namespace="observability",
+            values_file=self._helm_values_path / "lgtm" / "tempo-values.yaml",
+        )
+        results.append(tempo_result)
+
+        # Step 5: Install Grafana (Dashboards)
+        results.append("\nStep 5: Installing Grafana (Dashboards)...")
         grafana_result = self._helm_install_chart(
             release_name="grafana",
             chart="grafana",
@@ -226,8 +237,8 @@ class K8sAgent(BaseAgent):
         )
         results.append(grafana_result)
 
-        # Step 5: Install Kiali (Istio Traffic Visualization)
-        results.append("\nStep 5: Installing Kiali (Traffic Visualization)...")
+        # Step 6: Install Kiali (Istio Traffic Visualization)
+        results.append("\nStep 6: Installing Kiali (Traffic Visualization)...")
         kiali_result = self._helm_install_chart(
             release_name="kiali",
             chart="kiali-operator",
@@ -323,6 +334,7 @@ class K8sAgent(BaseAgent):
             "grafana": ("grafana", "grafana", "https://grafana.github.io/helm-charts", "observability"),
             "prometheus": ("prometheus", "prometheus", "https://prometheus-community.github.io/helm-charts", "observability"),
             "mimir": ("mimir", "mimir-distributed", "https://grafana.github.io/helm-charts", "observability"),
+            "tempo": ("tempo", "tempo", "https://grafana.github.io/helm-charts", "observability"),
             "kiali": ("kiali", "kiali-operator", "https://kiali.org/helm-charts", "istio-system"),
             "trivy": ("trivy-operator", "trivy-operator", "https://aquasecurity.github.io/helm-charts", "trivy-system"),
             "velero": ("velero", "velero", "https://vmware-tanzu.github.io/helm-charts", "velero"),
@@ -338,7 +350,7 @@ class K8sAgent(BaseAgent):
 
         # Find values file
         values_dir = chart_name.lower()
-        if chart_name.lower() in ["loki", "grafana", "mimir", "prometheus"]:
+        if chart_name.lower() in ["loki", "grafana", "mimir", "tempo", "prometheus"]:
             values_dir = "lgtm"
         values_file = self._helm_values_path / values_dir / f"{chart_name.lower()}-values.yaml"
 

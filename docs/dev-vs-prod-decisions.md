@@ -73,6 +73,24 @@ The current infrastructure was designed with **"Dev = Prod"** parity in mind. Wh
 
 ---
 
+## Observability - Tracing
+
+| Decision | Current Config | Dev Alternative | Prod Requirement | NIST Control | Impact |
+|----------|---------------|-----------------|------------------|--------------|--------|
+| **Tempo** | Deployed (distributed tracing) | Optional for dev | Debug request latency | AU-2, AU-6 | +2 pods, S3 |
+| **Tempo Replicas** | 2 | 1 | HA | CP-10 | +1 pod |
+| **Tempo Storage** | S3 | Local PVC | Durability, unlimited | SC-28 | S3 cost |
+| **Tempo Retention** | 30 days | 7 days | Trace history | AU-11 | S3 storage |
+| **Trace Protocols** | OTLP, Jaeger, Zipkin | OTLP only | Legacy compatibility | - | Minimal |
+
+**Tracing vs Traffic Visualization:**
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| **Tempo** | Debug ONE request across services | "Why was this request slow?" |
+| **Kiali** | See ALL traffic flows (aggregate) | "How does traffic flow between services?" |
+
+---
+
 ## Observability - Visualization
 
 | Decision | Current Config | Dev Alternative | Prod Requirement | NIST Control | Impact |
@@ -357,12 +375,13 @@ For teams wanting OSS compatibility with AWS management:
 |----------|-----------|---------------|-----------|
 | **Mimir** | 15+ pods | 0 or 5 (no Kafka) | 10-15 pods |
 | **Loki** | 10+ pods | 2 (SingleBinary) | 8 pods |
+| **Tempo** | 2 pods | 1 pod | 1 pod |
 | **Grafana** | 2 pods | 1 pod | 1 pod |
 | **Velero** | 4 pods | 0 | 4 pods |
 | **Kiali** | 2 pods | 1 pod | 1 pod |
 | **Kubecost** | 4 pods | 0 | 4 pods |
 | **Trivy** | 1 pod | 0 | 1 pod |
-| **Total** | ~40 pods | ~10 pods | ~30 pods |
+| **Total** | ~42 pods | ~11 pods | ~31 pods |
 
 ---
 
@@ -374,9 +393,9 @@ For teams wanting OSS compatibility with AWS management:
 | Nodes (3x t3a.xlarge) | $330 | $110 (2x t3a.medium) | $220 |
 | NAT Gateways (3) | $100 | $35 (1) | $65 |
 | EBS Storage | $50 | $20 | $30 |
-| S3 (Loki/Mimir/Velero) | $20 | $5 | $15 |
+| S3 (Loki/Mimir/Tempo/Velero) | $25 | $7 | $18 |
 | Data Transfer | $30 | $10 | $20 |
-| **Total** | **~$603/mo** | **~$253/mo** | **~$350/mo** |
+| **Total** | **~$608/mo** | **~$255/mo** | **~$353/mo** |
 
 ---
 
@@ -387,3 +406,4 @@ For teams wanting OSS compatibility with AWS management:
 | 1.0 | 2025-01-10 | AI Agent | Initial dev vs prod analysis with Kafka recommendation |
 | 1.1 | 2025-01-10 | AI Agent | Added three-way cost comparison (AWS vs Prod vs Dev), AMP/AMG pricing |
 | 1.2 | 2025-01-10 | AI Agent | Moved Kafka details to architecture.md, removed trade-offs from this doc |
+| 1.3 | 2025-01-10 | AI Agent | Added Tempo back for distributed tracing, updated pod/cost counts |

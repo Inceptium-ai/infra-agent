@@ -1011,16 +1011,16 @@ Mimir was not included in the initial deployment.
 |-----------|---------|---------|
 | **Loki** | Logs | S3 |
 | **Grafana** | Dashboards | EBS (PVC) |
+| **Tempo** | Distributed tracing | S3 |
 | **Mimir** | Metrics storage | S3 |
 | **Prometheus** | Metrics scraping | - |
 | **Kiali** | Traffic visualization | - |
-
-*Note: Tempo (traces) was removed - see lesson #32.*
 
 **Lesson:**
 When deploying the observability stack, verify all components are included:
 - [ ] Loki (logs)
 - [ ] Grafana (dashboards)
+- [ ] Tempo (distributed tracing)
 - [ ] Mimir (metrics storage) ← Easy to forget!
 - [ ] Prometheus (metrics scraping)
 - [ ] Kiali (Istio traffic visualization)
