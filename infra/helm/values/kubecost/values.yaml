@@ -1,5 +1,9 @@
 # Kubecost Helm Values - Cost Management
 # NIST PM-3: Information Resources (cost tracking)
+#
+# Chart: kubecost/cost-analyzer
+# Version: 2.8.5
+# Deploy: helm upgrade kubecost kubecost/cost-analyzer -n kubecost -f values.yaml --version 2.8.5
 
 # Global configuration
 global:

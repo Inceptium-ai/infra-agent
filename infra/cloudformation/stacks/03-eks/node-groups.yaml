@@ -112,7 +112,7 @@ Parameters:
 
 Conditions:
   IsProduction: !Equals [!Ref Environment, 'prd']
-  UseSpot: !Equals [!Ref CapacityType, 'SPOT']
+  # NOTE: UseSpot removed - CapacityType parameter used directly
 
 Metadata:
   AWS::CloudFormation::Interface:

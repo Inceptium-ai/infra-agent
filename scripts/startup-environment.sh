@@ -71,24 +71,31 @@ else
 fi
 
 echo ""
-echo "--- Step 3: Start RDS (if stopped) ---"
+echo "--- Step 3: Start RDS Instances (if stopped) ---"
 
-RDS_IDENTIFIER="${PROJECT_NAME}-${ENVIRONMENT}-postgres"
-RDS_STATUS=$(aws rds describe-db-instances \
-    --db-instance-identifier "$RDS_IDENTIFIER" \
-    --region "$REGION" \
-    --query 'DBInstances[0].DBInstanceStatus' \
-    --output text 2>/dev/null || echo "")
+# List of RDS instances to manage
+RDS_INSTANCES=(
+    "${PROJECT_NAME}-${ENVIRONMENT}-postgres"
+    # Keycloak removed - using AWS Cognito for authentication
+)
 
-if [[ "$RDS_STATUS" == "stopped" ]]; then
-    echo "Starting RDS instance: $RDS_IDENTIFIER"
-    aws rds start-db-instance --db-instance-identifier "$RDS_IDENTIFIER" --region "$REGION" || echo "Warning: Could not start RDS"
-    echo "RDS start initiated."
-elif [[ -n "$RDS_STATUS" ]]; then
-    echo "RDS is already in status: $RDS_STATUS"
-else
-    echo "No RDS instance found for $RDS_IDENTIFIER"
-fi
+for RDS_IDENTIFIER in "${RDS_INSTANCES[@]}"; do
+    RDS_STATUS=$(aws rds describe-db-instances \
+        --db-instance-identifier "$RDS_IDENTIFIER" \
+        --region "$REGION" \
+        --query 'DBInstances[0].DBInstanceStatus' \
+        --output text 2>/dev/null || echo "")
+
+    if [[ "$RDS_STATUS" == "stopped" ]]; then
+        echo "Starting RDS instance: $RDS_IDENTIFIER"
+        aws rds start-db-instance --db-instance-identifier "$RDS_IDENTIFIER" --region "$REGION" || echo "Warning: Could not start RDS $RDS_IDENTIFIER"
+        echo "RDS start initiated for $RDS_IDENTIFIER"
+    elif [[ -n "$RDS_STATUS" ]]; then
+        echo "RDS $RDS_IDENTIFIER is already in status: $RDS_STATUS"
+    else
+        echo "No RDS instance found for $RDS_IDENTIFIER (may not be deployed)"
+    fi
+done
 
 echo ""
 echo "--- Step 4: Wait for Bastion to be Ready ---"
@@ -192,15 +199,15 @@ if [[ -n "$NODE_GROUPS" ]]; then
     done
 fi
 
-# Show RDS status
-if [[ -n "$RDS_STATUS" ]]; then
+# Show RDS status for all instances
+for RDS_ID in "${RDS_INSTANCES[@]}"; do
     RDS_CURRENT=$(aws rds describe-db-instances \
-        --db-instance-identifier "$RDS_IDENTIFIER" \
+        --db-instance-identifier "$RDS_ID" \
         --region "$REGION" \
         --query 'DBInstances[0].DBInstanceStatus' \
-        --output text 2>/dev/null || echo "")
-    echo "  - RDS: $RDS_CURRENT"
-fi
+        --output text 2>/dev/null || echo "not deployed")
+    echo "  - RDS ($RDS_ID): $RDS_CURRENT"
+done
 
 echo ""
 echo "Connect to bastion:"

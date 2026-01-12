@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  IRSA Role for AWS Load Balancer Controller
+  NIST AC-6: Least Privilege (scoped IAM permissions)
+  NIST CM-3: Configuration Change Control (IaC managed)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Description: Environment name
+
+  OIDCProviderArn:
+    Type: String
+    Description: EKS OIDC Provider ARN
+
+  OIDCProviderURL:
+    Type: String
+    Description: EKS OIDC Provider URL (without https://)
+
+Resources:
+  #############################################
+  # AWS Load Balancer Controller IAM Role
+  #############################################
+  AWSLoadBalancerControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OIDCArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OIDCURL}:sub": "system:serviceaccount:kube-system:aws-load-balancer-controller",
+                      "${OIDCURL}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OIDCArn: !Ref OIDCProviderArn
+            OIDCURL: !Ref OIDCProviderURL
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: platform-team
+        - Key: NIST_Control
+          Value: AC-6
+
+  #############################################
+  # AWS Load Balancer Controller IAM Policy
+  #############################################
+  AWSLoadBalancerControllerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-aws-lb-controller-policy'
+      Roles:
+        - !Ref AWSLoadBalancerControllerRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # EC2 permissions for target registration
+          - Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+              - ec2:DescribeInstanceStatus
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcs
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeTags
+              - ec2:GetCoipPoolUsage
+              - ec2:DescribeCoipPools
+            Resource: '*'
+          # ELB permissions for target group management
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeLoadBalancerAttributes
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:DescribeListenerCertificates
+              - elasticloadbalancing:DescribeSSLPolicies
+              - elasticloadbalancing:DescribeRules
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetGroupAttributes
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:DescribeTags
+            Resource: '*'
+          # Target registration (scoped to our target groups)
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+            Resource: !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/${ProjectName}-${Environment}-*'
+          # IAM for service-linked role
+          - Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: '*'
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: elasticloadbalancing.amazonaws.com
+          # Cognito for OIDC auth
+          - Effect: Allow
+            Action:
+              - cognito-idp:DescribeUserPoolClient
+            Resource: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
+
+Outputs:
+  RoleArn:
+    Description: AWS Load Balancer Controller Role ARN
+    Value: !GetAtt AWSLoadBalancerControllerRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-aws-lb-controller-role-arn'

@@ -1,0 +1,41 @@
+# External Secrets Operator Helm Values
+# Syncs secrets from AWS Secrets Manager to Kubernetes
+# NIST IA-5: Authenticator Management
+# NIST SC-28: Protection of Information at Rest
+
+# Install command:
+# helm install external-secrets external-secrets/external-secrets \
+#   -n external-secrets --create-namespace \
+#   -f infra/helm/values/external-secrets/values.yaml
+
+# Service account for IRSA
+serviceAccount:
+  create: true
+  name: external-secrets
+  annotations:
+    eks.amazonaws.com/role-arn: ""  # Will be set after IRSA role creation
+
+# Webhook configuration
+webhook:
+  create: true
+
+# Cert controller for webhook certs
+certController:
+  create: true
+
+# Resource limits
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Metrics
+metrics:
+  service:
+    enabled: true
+
+# Install CRDs
+installCRDs: true

@@ -65,22 +65,31 @@ else
 fi
 
 echo ""
-echo "--- Step 3: Scale down RDS (if applicable) ---"
+echo "--- Step 3: Stop RDS Instances (if applicable) ---"
 
-RDS_IDENTIFIER="${PROJECT_NAME}-${ENVIRONMENT}-postgres"
-RDS_EXISTS=$(aws rds describe-db-instances \
-    --db-instance-identifier "$RDS_IDENTIFIER" \
-    --region "$REGION" \
-    --query 'DBInstances[0].DBInstanceIdentifier' \
-    --output text 2>/dev/null || echo "")
+# List of RDS instances to manage
+RDS_INSTANCES=(
+    "${PROJECT_NAME}-${ENVIRONMENT}-postgres"
+    # Keycloak removed - using AWS Cognito for authentication
+)
 
-if [[ -n "$RDS_EXISTS" && "$RDS_EXISTS" != "None" ]]; then
-    echo "Stopping RDS instance: $RDS_IDENTIFIER"
-    aws rds stop-db-instance --db-instance-identifier "$RDS_IDENTIFIER" --region "$REGION" || echo "Warning: Could not stop RDS"
-    echo "RDS stop initiated (will auto-start after 7 days)."
-else
-    echo "No RDS instance found for $RDS_IDENTIFIER"
-fi
+for RDS_IDENTIFIER in "${RDS_INSTANCES[@]}"; do
+    RDS_STATUS=$(aws rds describe-db-instances \
+        --db-instance-identifier "$RDS_IDENTIFIER" \
+        --region "$REGION" \
+        --query 'DBInstances[0].DBInstanceStatus' \
+        --output text 2>/dev/null || echo "")
+
+    if [[ "$RDS_STATUS" == "available" ]]; then
+        echo "Stopping RDS instance: $RDS_IDENTIFIER"
+        aws rds stop-db-instance --db-instance-identifier "$RDS_IDENTIFIER" --region "$REGION" || echo "Warning: Could not stop RDS $RDS_IDENTIFIER"
+        echo "RDS stop initiated for $RDS_IDENTIFIER (will auto-start after 7 days)."
+    elif [[ -n "$RDS_STATUS" ]]; then
+        echo "RDS $RDS_IDENTIFIER is in status: $RDS_STATUS (skipping)"
+    else
+        echo "No RDS instance found for $RDS_IDENTIFIER (may not be deployed)"
+    fi
+done
 
 echo ""
 echo "--- Shutdown Summary ---"
@@ -88,7 +97,7 @@ echo ""
 echo "Resources stopped/scaling down:"
 echo "  - EKS Node Groups: Scaling to 0"
 echo "  - Bastion: Stopped"
-echo "  - RDS: Stopped (if exists)"
+echo "  - RDS (postgres): Stopped (if exists)"
 echo ""
 echo "Resources still running (have ongoing costs):"
 echo "  - EKS Control Plane: \$0.10/hour"

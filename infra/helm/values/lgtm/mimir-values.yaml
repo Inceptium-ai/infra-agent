@@ -93,6 +93,9 @@ distributor:
       memory: 512Mi
 
 # Ingester - writes to storage
+# NOTE: Ingesters need significant memory for WAL replay during startup
+# OOMKilled at 1Gi and 2Gi - increased to 4Gi for stability
+# WAL replay during startup can consume 2-3GB temporarily
 ingester:
   replicas: 2
   persistentVolume:
@@ -101,11 +104,11 @@ ingester:
     storageClass: gp3
   resources:
     requests:
-      cpu: 100m
-      memory: 512Mi
+      cpu: 200m
+      memory: 2Gi
     limits:
-      cpu: 500m
-      memory: 1Gi
+      cpu: 2
+      memory: 4Gi
 
 # Querier - reads from storage
 querier:

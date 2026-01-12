@@ -77,6 +77,11 @@ Parameters:
     Default: v1.54.0-eksbuild.1
     Description: Version of the EBS CSI Driver add-on
 
+  MetricsServerVersion:
+    Type: String
+    Default: v0.8.0-eksbuild.6
+    Description: Version of the metrics-server add-on
+
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -106,6 +111,7 @@ Metadata:
           - CoreDnsVersion
           - KubeProxyVersion
           - EbsCsiVersion
+          - MetricsServerVersion
 
 Resources:
   #############################################
@@ -337,6 +343,27 @@ Resources:
         - Key: IaC_Version
           Value: !Ref IaCVersion
 
+  #############################################
+  # Metrics Server Add-on
+  # Required for kubectl top, HPA, and dashboard metrics
+  # NIST AU-2: Audit Events (resource utilization metrics)
+  #############################################
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: VpcCniAddon
+    Properties:
+      AddonName: metrics-server
+      AddonVersion: !Ref MetricsServerVersion
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: IaC_Version
+          Value: !Ref IaCVersion
+
 Outputs:
   VpcCniRoleArn:
     Description: ARN of the VPC CNI IAM role
@@ -379,3 +406,9 @@ Outputs:
     Value: !Ref EbsCsiVersion
     Export:
       Name: !Sub '${ProjectName}-${Environment}-ebs-csi-version'
+
+  MetricsServerAddonVersion:
+    Description: Version of the metrics-server add-on
+    Value: !Ref MetricsServerVersion
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-metrics-server-version'

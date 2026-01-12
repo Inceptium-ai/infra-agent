@@ -149,3 +149,6 @@ metrics:
 rbac:
   create: true
   clusterAdministrator: true
+
+# Skip CRD upgrade (uses bitnami kubectl image which requires subscription)
+upgradeCRDs: false

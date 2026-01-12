@@ -1145,3 +1145,704 @@ Before deploying any component, ask:
 2. What happens without it?
 3. Is there overlap with existing tools?
 4. Is it truly needed for compliance?
+
+---
+
+## 36. Istio Sidecar Injection Must Be Enabled BEFORE Deploying Workloads
+
+**Issue:**
+Deployed entire observability stack (Grafana, Loki, Prometheus, Mimir, etc.) without Istio sidecar injection. Discovered 53 pods running WITHOUT mTLS encryption - a NIST SC-8 compliance gap.
+
+**Root Cause:**
+Namespaces were not labeled with `istio-injection=enabled` before deploying Helm charts. Pods deployed without the label don't get Envoy sidecar proxies.
+
+**Impact:**
+| Namespace | Pods | Istio Sidecar | mTLS Status |
+|-----------|------|---------------|-------------|
+| observability | 37 | None | Plaintext traffic |
+| velero | 9 | None | Plaintext traffic |
+| kubecost | 5 | None | Plaintext traffic |
+| trivy-system | 1 | None | Plaintext traffic |
+| headlamp | 1 | None | Plaintext traffic |
+
+**Resource Constraint:**
+Adding Istio sidecars to all 53 pods would require:
+- ~5.3 vCPU additional (100m per sidecar)
+- ~6.8 Gi additional memory (128Mi per sidecar)
+- Cluster only had ~1.8 vCPU free
+
+**Correct Approach:**
+```bash
+# BEFORE deploying any Helm chart:
+kubectl create namespace observability
+kubectl label namespace observability istio-injection=enabled
+
+# THEN deploy workloads
+helm install grafana grafana/grafana -n observability -f values.yaml
+```
+
+**Remediation for Existing Deployments:**
+```bash
+# Label namespace
+kubectl label namespace observability istio-injection=enabled
+
+# Restart all deployments to inject sidecars
+kubectl rollout restart deployment -n observability
+```
+
+**Decision Made (2026-01-11):**
+- DEV: Enable Istio only on user-facing services (Grafana, Headlamp) due to resource constraints
+- TST/PRD: Full Istio injection on all namespaces (additional nodes budgeted)
+
+**Compensating Controls for DEV:**
+- All traffic within private VPC (100.64.x.x non-routable)
+- Network policies restrict pod-to-pod communication
+- No external exposure without ALB + TLS termination
+
+**Prevention Checklist:**
+- [ ] Label namespace with `istio-injection=enabled` BEFORE any helm install
+- [ ] Add sidecar annotations to all Helm values files
+- [ ] Audit deployments with: `kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}' | grep -v istio-proxy`
+- [ ] Verify with: `istioctl analyze` after deployment
+
+**Lesson:**
+Istio sidecar injection is namespace-level. If you forget to label the namespace BEFORE deploying workloads, all pods will run without mTLS. This is easy to miss and creates a silent compliance gap.
+
+---
+
+## 37. SSM Tunnel Session Timeouts
+
+**Issue:**
+SSM tunnel to EKS API kept disconnecting, requiring frequent restarts.
+
+**Defaults:**
+| Setting | Default Value | Impact |
+|---------|---------------|--------|
+| Idle timeout | 20 minutes | Disconnects if no traffic |
+| Max session duration | 60 minutes | Hard limit regardless of activity |
+
+**Configuration (AWS Console):**
+Systems Manager → Session Manager → Preferences:
+- Idle session timeout: Up to 60 minutes
+- Max session duration: Up to 24 hours
+
+**Workaround for Long Sessions:**
+Keep traffic flowing to prevent idle timeout:
+```bash
+# Add to tunnel script
+while true; do sleep 300; kubectl get nodes > /dev/null 2>&1; done &
+```
+
+**Lesson:**
+For extended kubectl sessions, either increase SSM timeout in preferences or implement keep-alive traffic.
+
+---
+
+## 38. NEVER Use kubectl/AWS CLI to Modify Resources - IaC Only
+
+**Issue:**
+Attempted to enable Istio sidecars using `kubectl label namespace` and `kubectl patch deployment` - creating configuration drift from IaC.
+
+**Wrong approach (creates drift):**
+```bash
+# DON'T DO THIS
+kubectl label namespace headlamp istio-injection=enabled
+kubectl patch deployment grafana -n observability -p '{"spec":...}'
+aws eks update-cluster-config --name cluster --resources-vpc-config ...
+```
+
+**Correct approach (IaC):**
+```yaml
+# Update infra/helm/values/headlamp/values.yaml
+podAnnotations:
+  sidecar.istio.io/inject: "true"
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+```
+
+Then deploy via Helm:
+```bash
+helm upgrade headlamp headlamp/headlamp -n headlamp -f infra/helm/values/headlamp/values.yaml
+```
+
+**Why this matters:**
+- kubectl/AWS CLI changes are not tracked in Git
+- Next `helm upgrade` or CloudFormation deploy will overwrite manual changes
+- Cannot reproduce environment from IaC alone
+- Violates NIST CM-3 (Configuration Change Control)
+- Audit trail is incomplete
+
+**All IaC sources in this project:**
+| Resource Type | IaC Location | Deploy Method |
+|---------------|--------------|---------------|
+| AWS Resources | `infra/cloudformation/stacks/` | `aws cloudformation deploy` |
+| Kubernetes | `infra/helm/values/` | `helm upgrade` |
+| Istio Config | `infra/helm/values/istio/` | `helm upgrade` |
+
+**Lesson:**
+Treat ALL infrastructure as immutable. Never touch it directly. Always go through the IaC source files, commit to Git, then deploy.
+
+---
+
+## 39. Implement Drift Detection Early
+
+**Issue:**
+Multiple configuration drifts accumulated without detection:
+- EKS node group scaling changed via CLI
+- Namespace labels added via kubectl
+- Bastion EC2 MetadataOptions drifted
+- Failed Helm releases (prometheus, velero) went unnoticed
+
+**Root Cause:**
+No automated drift detection was in place. Changes made outside IaC went undetected until manual audit.
+
+**Detection Methods Available:**
+
+| Method | Command | What It Checks |
+|--------|---------|----------------|
+| **CloudFormation Drift** | `aws cloudformation detect-stack-drift --stack-name <name>` | AWS resources |
+| **Helm Diff Plugin** | `helm diff upgrade <release> <chart> -f values.yaml` | K8s workloads |
+| **Custom Script** | `./scripts/drift-check.sh` | Both |
+
+**Drift Check Script Created:**
+```bash
+./scripts/drift-check.sh
+```
+
+Output example:
+```
+=== CloudFormation Stacks ===
+Checking infra-agent-dev-bastion... ⚠️  DRIFTED
+Checking infra-agent-dev-eks-node-groups... ✅ IN_SYNC
+
+=== Helm Release Drift ===
+prometheus    failed
+velero        failed
+```
+
+**When to Run Drift Detection:**
+- Before any deployment
+- After any manual troubleshooting session
+- Weekly scheduled check
+- After infrastructure incidents
+
+**Future Improvement:**
+- Add drift check to CI/CD pipeline
+- Consider GitOps (Argo CD/Flux) for continuous drift detection and auto-remediation
+
+**Lesson:**
+Implement drift detection from day one. Run `./scripts/drift-check.sh` regularly and before deployments to catch drift early.
+
+---
+
+## 40. Failed Helm Releases Need Investigation
+
+**Issue:**
+Drift check revealed Helm releases in "failed" state:
+- prometheus: failed
+- velero: failed
+
+**Cause:**
+Failed releases indicate the last `helm upgrade/install` did not complete successfully. The release is stuck and may have partial resources deployed.
+
+**How to Investigate:**
+```bash
+# Check release history
+helm history prometheus -n observability
+helm history velero -n velero
+
+# Check what's deployed
+kubectl get all -n observability -l app.kubernetes.io/name=prometheus
+kubectl get all -n velero
+
+# Check pod logs for errors
+kubectl logs -n observability -l app.kubernetes.io/name=prometheus --tail=50
+```
+
+**How to Fix:**
+```bash
+# Option 1: Rollback to last successful
+helm rollback prometheus 1 -n observability
+
+# Option 2: Uninstall and reinstall
+helm uninstall prometheus -n observability
+helm install prometheus prometheus-community/prometheus -n observability -f values.yaml
+
+# Option 3: Force upgrade
+helm upgrade --install prometheus prometheus-community/prometheus -n observability -f values.yaml --force
+```
+
+**Lesson:**
+Monitor Helm release status. A "failed" release needs immediate attention - it indicates broken IaC deployment.
+
+---
+
+## 41. CloudFormation Drift Detection False Positive for EC2 MetadataOptions
+
+**Issue:**
+CloudFormation drift detection reported bastion EC2 instance as "DRIFTED" for MetadataOptions, but the instance was correctly configured.
+
+**Drift Detection Output:**
+```json
+{
+  "PropertyPath": "/MetadataOptions",
+  "ExpectedValue": {"HttpEndpoint":"enabled","HttpPutResponseHopLimit":1,"HttpTokens":"required"},
+  "ActualValue": "null",
+  "DifferenceType": "REMOVE"
+}
+```
+
+**Root Cause:**
+This is a **known AWS limitation**. CloudFormation drift detection cannot properly read MetadataOptions from running EC2 instances. It reports `null` for the actual value even when the instance is correctly configured with IMDSv2.
+
+**Consequence:**
+Running `aws cloudformation deploy` to "fix" this drift caused CloudFormation to **replace the instance** (since MetadataOptions changes require instance replacement), creating unnecessary downtime and a new instance.
+
+**How to Verify Actual Instance Configuration:**
+```bash
+# Check actual MetadataOptions on the running instance
+aws ec2 describe-instances --instance-ids i-xxxxx \
+  --query 'Reservations[0].Instances[0].MetadataOptions' \
+  --output json
+```
+
+**Lesson:**
+Before "fixing" CloudFormation drift:
+1. **Verify the actual resource state** - don't blindly trust drift detection
+2. **Research known drift detection limitations** for the resource type
+3. For EC2 MetadataOptions drift, always verify via `aws ec2 describe-instances` first
+4. **Document false positives** to avoid repeated unnecessary updates
+
+**Known CloudFormation Drift Detection Limitations:**
+- EC2 MetadataOptions (reports null)
+- Some IAM policy details
+- Lambda function code changes
+
+---
+
+## 42. Istio Sidecar Injection Requires Pod Label (Not Just Annotation)
+
+**Issue:**
+After adding `sidecar.istio.io/inject: "true"` as a pod annotation, Istio was not injecting sidecars into Grafana and Headlamp pods.
+
+**Root Cause:**
+The Istio mutating webhook's `objectSelector` uses **label matchers**, not annotation matchers:
+
+```yaml
+objectSelector:
+  matchExpressions:
+  - key: sidecar.istio.io/inject
+    operator: In
+    values:
+    - "true"
+```
+
+This selector checks for `sidecar.istio.io/inject` as a **pod label**, not annotation.
+
+**For annotation-based injection to work**, the namespace must have either:
+- `istio-injection=enabled` label, OR
+- `istio.io/rev=default` label
+
+**Solution:**
+Add both pod label AND annotation in Helm values:
+```yaml
+# Label required for webhook objectSelector matching
+podLabels:
+  sidecar.istio.io/inject: "true"
+
+# Annotations for injection configuration
+podAnnotations:
+  sidecar.istio.io/inject: "true"
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+```
+
+**Lesson:**
+When using Istio sidecar injection without namespace labels:
+- Set `sidecar.istio.io/inject: "true"` as both **label** and **annotation**
+- The label triggers the webhook selector
+- The annotation configures injection behavior
+- Always test injection after deployment
+
+---
+
+## 43. Kubernetes 1.28+ Native Sidecars
+
+**Observation:**
+After successful Istio sidecar injection, the `istio-proxy` container doesn't appear in `.spec.containers[]`. Instead, it appears in `.spec.initContainers[]`.
+
+**Explanation:**
+Istio uses **Kubernetes 1.28+ native sidecars**, a new feature where sidecar containers are specified as init containers with `restartPolicy: Always`.
+
+```yaml
+initContainers:
+- name: istio-init
+  restartPolicy: null        # Runs once (normal init container)
+- name: istio-proxy
+  restartPolicy: Always      # Native sidecar - runs continuously
+```
+
+**How to Verify Sidecar Injection:**
+```bash
+# Check init container restart policy
+kubectl get pod <pod-name> -o json | jq '.spec.initContainers[] | "\(.name): \(.restartPolicy)"'
+
+# Expected output:
+# istio-init: null
+# istio-proxy: Always
+
+# Check READY column - includes native sidecars
+kubectl get pods -n <namespace>
+# headlamp   2/2   Running   (main container + istio-proxy)
+```
+
+**Benefits of Native Sidecars:**
+- Startup ordering: sidecars start before main container
+- Shutdown ordering: sidecars stop after main container
+- Better lifecycle management
+
+**Lesson:**
+On EKS 1.28+, Istio sidecars won't appear in `.spec.containers[]`. Check:
+1. READY column (e.g., 2/2 instead of 1/1)
+2. `.spec.initContainers[]` with `restartPolicy: Always`
+
+---
+
+## 44. Always Use cfn-lint and cfn-guard for IaC Validation
+
+**Issue:**
+CloudFormation templates were deployed without proper validation, leading to:
+- Unused parameters that clutter templates
+- Missing NIST 800-53 compliance requirements
+- Potential security misconfigurations
+
+**Tools:**
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **cfn-lint** | Syntax/best practice validation | `pip3 install cfn-lint` |
+| **cfn-guard** | Policy-as-code compliance (NIST) | `brew install cloudformation-guard` |
+
+**cfn-lint Usage:**
+```bash
+# Validate all CloudFormation templates
+cfn-lint infra/cloudformation/stacks/**/*.yaml
+
+# Common issues detected:
+# W2001 - Unused parameter
+# W8001 - Unused condition
+# E0000 - Template syntax error
+```
+
+**cfn-guard Usage:**
+```bash
+# Validate against NIST 800-53 rules
+cfn-guard validate -d template.yaml -r cfn-guard-rules/nist-800-53/phase1-controls.guard
+
+# Output:
+# PASS - Rule passed for this resource type
+# SKIP - Rule not applicable (no matching resources in template)
+# FAIL - Compliance violation
+```
+
+**cfn-guard Rule Structure (v3.x):**
+```guard
+rule rds_encryption {
+    AWS::RDS::DBInstance {
+        Properties.StorageEncrypted == true
+        <<
+            NIST SC-28: RDS instances must have storage encryption enabled
+        >>
+    }
+}
+```
+
+**CI/CD Integration:**
+```yaml
+# .github/workflows/validate-iac.yaml
+- name: Validate CloudFormation
+  run: |
+    cfn-lint infra/cloudformation/stacks/**/*.yaml
+    cfn-guard validate -d infra/cloudformation/stacks/**/*.yaml \
+      -r infra/cloudformation/cfn-guard-rules/nist-800-53/*.guard
+```
+
+**Lesson:**
+Run both cfn-lint (syntax) and cfn-guard (compliance) on ALL CloudFormation changes before deployment. Add to CI/CD pipeline as mandatory gates.
+
+---
+
+## 45. Keycloak for Centralized SSO Authentication
+
+**Issue:**
+Multiple observability tools (Grafana, Headlamp, Kiali, Kubecost) each had separate authentication:
+- Grafana: admin password
+- Headlamp: service account token
+- Kiali: various auth methods
+- Kubecost: basic auth
+
+This creates multiple credentials to manage and inconsistent user experience.
+
+**Solution:**
+Deploy Keycloak as centralized identity provider (IdP) with OIDC/OAuth2.
+
+**Architecture:**
+```
+                    +-----------+
+                    | Keycloak  |
+                    |   (IdP)   |
+                    +-----+-----+
+                          |
+        +-----------------+------------------+
+        |                 |                  |
+   +----v----+      +-----v-----+     +------v------+
+   | Grafana |      | Headlamp  |     |   Kiali     |
+   | (OIDC)  |      |  (OIDC)   |     |   (OIDC)    |
+   +---------+      +-----------+     +-------------+
+```
+
+**OIDC Configuration:**
+
+| Service | OIDC Support | Configuration Location |
+|---------|--------------|------------------------|
+| Grafana | ✅ Native | `auth.generic_oauth` in grafana-values.yaml |
+| Headlamp | ✅ Native | `--oidc-*` flags in headlamp-values.yaml |
+| Kiali | ✅ Native | `auth.strategy: openid` in kiali-values.yaml |
+| Kubecost | ⚠️ Limited | Basic auth or SSO via ingress |
+
+**IaC for Keycloak:**
+```
+infra/cloudformation/stacks/02-data/keycloak-rds.yaml   # RDS PostgreSQL
+infra/helm/values/keycloak/keycloak-deployment.yaml    # K8s deployment
+```
+
+**NIST Controls:**
+- IA-2 (Identification and Authentication): Centralized identity management
+- IA-5 (Authenticator Management): Unified credential policies
+- AC-2 (Account Management): Single point for user provisioning
+
+**Lesson:**
+For production environments, deploy Keycloak (or similar IdP) for centralized SSO. This simplifies authentication management and improves security posture.
+
+---
+
+## 46. AWS Cognito + ALB Authentication (Replacing Keycloak)
+
+**Decision:**
+Switched from self-managed Keycloak to AWS Cognito for observability authentication. Simpler, managed service, no RDS required.
+
+**Architecture:**
+```
+User → ALB (HTTPS) → Cognito Auth → Backend Service
+                          ↓
+                    JWT in X-Amzn-Oidc-Data header
+```
+
+**Key Components:**
+| Component | Purpose |
+|-----------|---------|
+| Cognito User Pool | User directory, password policy |
+| Cognito App Client | OAuth2 client for ALB |
+| ALB authenticate-cognito action | Redirects unauthenticated users to Cognito |
+
+**CloudFormation Resources:**
+- `infra/cloudformation/stacks/01-networking/cognito-auth.yaml`
+- `infra/cloudformation/stacks/01-networking/alb-observability.yaml`
+
+**Lesson:**
+AWS Cognito provides simpler authentication than self-managed Keycloak for most use cases. Consider Cognito first for AWS-native workloads.
+
+---
+
+## 47. Cognito App Client ExplicitAuthFlows Required for Login
+
+**Error:**
+```
+401 Unauthorized
+Incorrect username or password
+```
+
+**Cause:**
+Cognito app client was created without `ExplicitAuthFlows`. The hosted UI requires specific auth flows to be enabled.
+
+**Fix:**
+Add ExplicitAuthFlows to CloudFormation:
+```yaml
+UserPoolClient:
+  Type: AWS::Cognito::UserPoolClient
+  Properties:
+    ExplicitAuthFlows:
+      - ALLOW_USER_SRP_AUTH        # Required for hosted UI
+      - ALLOW_USER_PASSWORD_AUTH   # Required for username/password login
+      - ALLOW_REFRESH_TOKEN_AUTH   # Required for token refresh
+```
+
+**Lesson:**
+When using Cognito hosted UI for authentication:
+1. `ALLOW_USER_SRP_AUTH` - Secure Remote Password protocol
+2. `ALLOW_USER_PASSWORD_AUTH` - Username/password auth
+3. `ALLOW_REFRESH_TOKEN_AUTH` - Token refresh capability
+
+Without these, users will get "incorrect username or password" even with correct credentials.
+
+---
+
+## 48. Grafana JWT Auth for ALB + Cognito
+
+**Issue:**
+After ALB authenticates user via Cognito, Grafana still shows its own login page.
+
+**Cause:**
+Grafana doesn't know about the ALB authentication. Need to configure Grafana to trust the JWT in ALB headers.
+
+**Solution:**
+Configure Grafana's JWT authentication in `grafana-values.yaml`:
+```yaml
+grafana.ini:
+  auth.jwt:
+    enabled: true
+    header_name: X-Amzn-Oidc-Data
+    email_claim: email
+    username_claim: email
+    auto_sign_up: true
+    jwk_set_url: https://public-keys.auth.elb.us-east-1.amazonaws.com
+```
+
+**How it works:**
+1. ALB authenticates user via Cognito
+2. ALB adds JWT to `X-Amzn-Oidc-Data` header
+3. Grafana reads JWT from header
+4. Grafana validates JWT against ALB's public keys
+5. Grafana auto-creates user from JWT claims
+
+**Lesson:**
+When putting Grafana behind ALB + Cognito, configure `auth.jwt` to use ALB's JWT header. The JWK URL is region-specific: `https://public-keys.auth.elb.{region}.amazonaws.com`
+
+---
+
+## 49. Kiali Anonymous Mode Behind ALB
+
+**Issue:**
+Kiali requires a Kubernetes token even after ALB/Cognito authentication.
+
+**Solution:**
+Set Kiali to anonymous mode since ALB already handles authentication:
+```yaml
+# kiali-cr.yaml
+spec:
+  auth:
+    strategy: anonymous
+```
+
+**Security Note:**
+This is acceptable because:
+1. ALB + Cognito authenticates all users before reaching Kiali
+2. Only authenticated users can access the ALB URL
+3. Kiali is not directly exposed to internet
+
+**Lesson:**
+For services behind ALB + Cognito that don't support JWT header auth, use anonymous mode. The perimeter authentication (ALB) provides the security layer.
+
+---
+
+## 50. Headlamp Token Requirement - Architectural Limitation
+
+**Issue:**
+Headlamp STILL requires a Kubernetes token even after Cognito authentication.
+
+**Root Cause:**
+This is a fundamental architectural constraint, not a bug:
+1. Headlamp is a Kubernetes dashboard
+2. It needs to call the Kubernetes API
+3. Kubernetes API requires authentication (token, certificate, etc.)
+4. ALB/Cognito auth is for the web UI only, not K8s API
+
+**Comparison:**
+| Service | Web UI Auth | Backend Auth |
+|---------|-------------|--------------|
+| Grafana | JWT (ALB header) | Datasource auth (internal) |
+| Kiali | Anonymous | Service account (internal) |
+| Headlamp | Cognito (ALB) | **K8s token (user provides)** |
+
+**Why Headlamp is different:**
+- Grafana/Kiali have internal service accounts for their backends
+- Headlamp proxies K8s API calls on behalf of the user
+- User's K8s permissions determine what they can see/do
+- This is intentional - RBAC at the K8s level
+
+**Future Options to Eliminate Token:**
+1. **Headlamp OIDC**: Configure Headlamp to use Cognito OIDC directly (complex)
+2. **Pre-injected Token**: Mount a service account token (reduces RBAC granularity)
+3. **EKS Pod Identity + IRSA**: Map Cognito users to K8s RBAC (most complex)
+
+**Lesson:**
+Headlamp's token requirement is by design for K8s RBAC. Accept this as a UX limitation or invest in OIDC integration for true SSO.
+
+---
+
+## 51. NEVER Update AWS Resources via CLI - Always Use IaC
+
+**Violation:**
+```bash
+# WRONG - This creates drift!
+aws cognito-idp update-user-pool-client \
+  --user-pool-id us-east-1_xxx \
+  --client-id xxx \
+  --explicit-auth-flows ALLOW_USER_SRP_AUTH ALLOW_REFRESH_TOKEN_AUTH
+```
+
+**Why it's wrong:**
+1. Change is not tracked in Git
+2. CloudFormation/Terraform doesn't know about it
+3. Next IaC deployment may overwrite it
+4. Cannot reproduce environment from IaC alone
+5. Violates NIST CM-3 (Configuration Change Control)
+
+**Correct approach:**
+1. Update CloudFormation template
+2. Run cfn-lint and cfn-guard validation
+3. Deploy via `aws cloudformation update-stack`
+
+```yaml
+# In cognito-auth.yaml
+UserPoolClient:
+  Properties:
+    ExplicitAuthFlows:
+      - ALLOW_USER_SRP_AUTH
+      - ALLOW_USER_PASSWORD_AUTH
+      - ALLOW_REFRESH_TOKEN_AUTH
+```
+
+**Lesson:**
+EVERY infrastructure change must go through IaC:
+- AWS resources → CloudFormation
+- K8s resources → Helm charts
+- Never use CLI for permanent changes
+
+---
+
+## 52. Istio Sidecar Injection Version Mismatch
+
+**Error:**
+```
+admission webhook "object.sidecar-injector.istio.io" denied the request:
+failed to run injection template: template: inject:29:111: executing "inject"
+at <.NativeSidecars>: can't evaluate field NativeSidecars in type *inject.SidecarTemplateData
+```
+
+**Cause:**
+Istio sidecar injector template references `.NativeSidecars` field which doesn't exist in the current Istio version's SidecarTemplateData struct.
+
+**Workaround:**
+Temporarily disable Istio injection for affected workloads:
+```yaml
+podLabels:
+  sidecar.istio.io/inject: "false"
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+```
+
+**Proper Fix:**
+- Upgrade Istio to version compatible with K8s native sidecars
+- Or downgrade injection template
+
+**Lesson:**
+Istio version must be compatible with Kubernetes version. When using K8s 1.28+ native sidecars feature, ensure Istio supports it.

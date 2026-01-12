@@ -1,0 +1,44 @@
+# AWS Load Balancer Controller Helm Values
+# Manages target registration via TargetGroupBinding CRDs (IaC)
+# NIST CM-3: Configuration Change Control
+#
+# Prerequisites:
+#   1. IRSA role with ALB controller permissions (created via CloudFormation)
+#   2. Helm repo: helm repo add eks https://aws.github.io/eks-charts
+#
+# Install:
+#   helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+#     -n kube-system \
+#     -f infra/helm/values/aws-load-balancer-controller/values.yaml
+
+clusterName: infra-agent-dev-cluster
+region: us-east-1
+vpcId: vpc-01510f14ff294bd9a
+
+# Service account with IRSA
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::340752837296:role/infra-agent-dev-aws-lb-controller-role"
+
+# We only need TargetGroupBinding functionality, not full ingress controller
+# This allows us to bind services to pre-existing ALB target groups
+enableServiceMutatorWebhook: true
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Replicas for HA
+replicaCount: 1
+
+# Only enable what we need
+enableShield: false
+enableWaf: false
+enableWafv2: false

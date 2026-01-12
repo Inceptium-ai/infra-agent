@@ -9,9 +9,11 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 - NIST 800-53 R5 compliance validation and enforcement
 - Zero Trust network architecture with non-routable pod subnets
 - mTLS encryption via Istio service mesh
+- Centralized SSO authentication via Keycloak (OIDC)
 - Comprehensive observability stack (Loki, Grafana, Tempo, Mimir, Prometheus, Kiali)
 - AI-driven drift detection and remediation
 - Blue/Green deployment with automated rollback
+- IaC validation via cfn-lint and cfn-guard (NIST policy-as-code)
 
 **Target Environment:** AWS EKS in us-east-1, with three environments (DEV, TST, PRD)
 
@@ -102,6 +104,62 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | EKS creates log groups | Defining same log group causes conflict | Add `DependsOn` to create log group BEFORE EKS cluster |
 | EKS upgrade path | Can only upgrade one minor version at a time | Plan sequential upgrades (1.32 → 1.33 → 1.34) |
 
+### IaC Validation Pipeline
+
+All CloudFormation templates must pass validation before deployment:
+
+| Tool | Purpose | NIST Control |
+|------|---------|--------------|
+| **cfn-lint** | Syntax, best practices, resource validation | CM-3 (Configuration Change) |
+| **cfn-guard** | Policy-as-code for NIST 800-53 compliance | CM-6 (Configuration Settings) |
+
+**Validation Process:**
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Developer     │────►│   cfn-lint      │────►│   cfn-guard     │────►│   Deploy        │
+│   Commit        │     │   (Syntax)      │     │   (NIST Rules)  │     │   Change Set    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+                              │                       │
+                              ▼                       ▼
+                        Errors block            Non-compliant
+                        deployment              resources blocked
+```
+
+**cfn-guard Rule Examples:**
+```guard
+# NIST SC-28: RDS encryption at rest
+rule rds_encryption {
+    AWS::RDS::DBInstance {
+        Properties.StorageEncrypted == true
+    }
+}
+
+# NIST SC-7: RDS not publicly accessible
+rule rds_not_public {
+    AWS::RDS::DBInstance {
+        Properties.PubliclyAccessible == false
+    }
+}
+
+# NIST CM-8: Mandatory tagging
+rule mandatory_tags {
+    AWS::EC2::VPC {
+        Properties.Tags EXISTS
+    }
+}
+```
+
+**Validation Commands:**
+```bash
+# Lint all templates
+cfn-lint infra/cloudformation/stacks/**/*.yaml
+
+# Validate NIST compliance
+cfn-guard validate \
+  -r infra/cloudformation/cfn-guard-rules/nist-800-53/phase1-controls.guard \
+  -d infra/cloudformation/stacks/**/*.yaml
+```
+
 ### AMI and Instance Constraints
 | Constraint | Impact | Mitigation |
 |------------|--------|------------|
@@ -139,6 +197,7 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 | Kafka (Mimir) | 3.9 | Write-ahead log for Mimir ingest durability |
 | Tempo | 2.6 | Distributed tracing (S3-backed) |
 | Kiali | 2.20 | Service mesh traffic visualization |
+| Keycloak | 26.0 | Centralized SSO/OIDC identity provider |
 | Trivy Operator | 0.29 | In-cluster vulnerability scanning |
 | Velero | 1.17 | Backup/restore |
 | Kubecost | 2.8 | Cost management |
@@ -549,6 +608,43 @@ mimir:
 
 ---
 
+#### 9. Keycloak (Identity & Access Management)
+
+| Property | Value |
+|----------|-------|
+| **Image** | `quay.io/keycloak/keycloak:26.0` |
+| **Namespace** | `identity` |
+| **Purpose** | Centralized SSO/OIDC identity provider for all UI components |
+| **NIST Controls** | IA-2 (Identification), IA-5 (Authenticator Mgmt), AC-2 (Account Mgmt) |
+
+**Components:**
+| Component | Replicas | CPU Request | Memory Request | Ports |
+|-----------|----------|-------------|----------------|-------|
+| keycloak | 1-2 | 500m | 1Gi | 8080 (HTTP), 8443 (HTTPS) |
+
+**Database:**
+| Environment | Backend | Notes |
+|-------------|---------|-------|
+| DEV | RDS PostgreSQL 17.7 | Single-AZ, db.t4g.micro |
+| TST/PRD | RDS PostgreSQL 17.7 | Multi-AZ, db.r6g.large |
+
+**OIDC Integration:**
+Keycloak provides centralized SSO for all UI components:
+| Client | Redirect URI | Protocol |
+|--------|--------------|----------|
+| Grafana | `https://grafana.{domain}/login/generic_oauth` | OIDC |
+| Headlamp | `https://headlamp.{domain}/oidc-callback` | OIDC |
+| Kiali | `https://kiali.{domain}/api/auth/callback` | OIDC |
+| Kubecost | `https://kubecost.{domain}/model/oidc/callback` | OIDC |
+
+**Health Checks:**
+- Readiness: `GET /health/ready` on port 8080
+- Liveness: `GET /health/live` on port 8080
+
+**Dependencies:** RDS PostgreSQL (CloudFormation), Secrets Manager for credentials
+
+---
+
 ### Add-on Port Summary
 
 | Service | Namespace | Service Port | Target Port | Protocol |
@@ -566,6 +662,7 @@ mimir:
 | velero | velero | 8085 | 8085 | HTTP |
 | kubecost | kubecost | 9090 | 9090 | HTTP |
 | headlamp | headlamp | 4466 | 4466 | HTTP |
+| keycloak | identity | 8080, 8443 | 8080, 8443 | HTTP, HTTPS |
 
 ---
 
@@ -759,7 +856,45 @@ This section provides detailed data flow diagrams for each add-on category.
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9. Unified Observability Dashboard (Grafana)
+### 9. Authentication Flow (Keycloak)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           KEYCLOAK SSO AUTHENTICATION                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
+│  │ Operator │    │ Grafana/ │    │ Keycloak │    │   RDS    │    │ Operator │  │
+│  │ Browser  │───►│ Headlamp │───►│  (OIDC)  │───►│PostgreSQL│───►│  Logged  │  │
+│  │          │    │ /Kiali   │    │          │    │          │    │   In     │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
+│       │               │               │               │               │         │
+│       │               │               │               │               │         │
+│  1. Access        2. Redirect     3. Login        4. Validate     5. Return   │
+│     Grafana         to Keycloak     Page            User            JWT/Token │
+│                                                                                  │
+│  OIDC Flow:                                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────┐    │
+│  │  Browser → App → Keycloak (/auth) → Login → Keycloak → App (callback)  │    │
+│  │                                                  │                       │    │
+│  │                                            JWT Token                     │    │
+│  │                                            (id_token,                    │    │
+│  │                                             access_token)               │    │
+│  └────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  Integrated Services:                                                            │
+│  • Grafana (observability dashboards)                                           │
+│  • Headlamp (Kubernetes admin console)                                          │
+│  • Kiali (service mesh visualization)                                           │
+│  • Kubecost (cost management)                                                   │
+│                                                                                  │
+│  NIST: IA-2 (Identification), IA-5 (Authenticator Mgmt), AC-2 (Account Mgmt)   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 10. Unified Observability Dashboard (Grafana)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -1151,6 +1286,46 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 
 ---
 
+## Known Compliance Gaps
+
+### SC-8: Transmission Confidentiality (Partial)
+
+**Status:** PARTIAL COMPLIANCE
+
+**Issue:** Observability stack pods (Grafana, Loki, Prometheus, Mimir, etc.) are running WITHOUT Istio sidecar injection. Traffic between these services is not encrypted with mTLS.
+
+**Affected Namespaces:**
+| Namespace | Pods | Istio Injection | Status |
+|-----------|------|-----------------|--------|
+| observability | 37 | Disabled | Not compliant |
+| velero | 9 | Disabled | Not compliant |
+| kubecost | 5 | Disabled | Not compliant |
+| trivy-system | 1 | Disabled | Not compliant |
+| headlamp | 1 | **Enabled** | Compliant |
+
+**Root Cause:** Namespaces were not labeled with `istio-injection=enabled` before deploying Helm charts.
+
+**Resource Constraint:** Enabling sidecars on all 53 pods would require ~5.3 vCPU additional. Current cluster has only ~1.8 vCPU free.
+
+**Mitigation Decision (2026-01-11):**
+- Enable Istio sidecars on user-facing services only (Grafana, Headlamp)
+- Accept risk for internal observability traffic (defense-in-depth via VPC isolation)
+- Document as accepted risk for DEV environment
+- Full compliance required for TST/PRD (additional nodes budgeted)
+
+**Compensating Controls:**
+- All traffic is within private VPC (100.64.x.x non-routable subnets)
+- Network policies restrict pod-to-pod communication
+- No external exposure without ALB + TLS termination
+
+**Remediation Plan:**
+1. Add 1 additional node when budget allows (+$110/mo)
+2. Label all namespaces with `istio-injection=enabled`
+3. Restart all deployments to inject sidecars
+4. Verify mTLS with: `istioctl analyze` and Kiali traffic graph
+
+---
+
 ## Version Information
 
 | Component | Version | Notes |
@@ -1163,11 +1338,15 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | Mimir | 3.0 | Long-term metrics storage |
 | Tempo | 2.6 | Distributed tracing |
 | Kiali | 2.20 | Traffic visualization |
+| Keycloak | 26.0 | Centralized SSO/OIDC |
 | Trivy Operator | 0.29 | In-cluster scanning |
 | Velero | 1.17 | Backup/restore |
 | Kubecost | 2.8 | Cost management |
 | Headlamp | 0.39 | Admin console |
 | Python | 3.11+ | LangGraph compatible |
+| cfn-lint | Latest | CloudFormation linting |
+| cfn-guard | 3.x | NIST policy-as-code |
+| PostgreSQL (RDS) | 17.7 | Keycloak database |
 
 ---
 
@@ -1185,3 +1364,6 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 1.7 | 2025-01-10 | AI Agent | Replaced LGTM references with "Observability Stack" (Tempo removed) |
 | 1.8 | 2025-01-10 | AI Agent | Added Tempo back for distributed tracing, added comprehensive flow diagrams for all add-ons |
 | 1.9 | 2025-01-10 | AI Agent | Added Tempo to Version Information table, updated main data flow diagram to include Tempo |
+| 2.0 | 2025-01-11 | AI Agent | Added Known Compliance Gaps section documenting SC-8 partial compliance for observability stack |
+| 2.1 | 2025-01-11 | AI Agent | Added Keycloak SSO/OIDC for centralized authentication across all UI components |
+| 2.2 | 2025-01-11 | AI Agent | Added IaC Validation Pipeline section (cfn-lint, cfn-guard for NIST compliance) |

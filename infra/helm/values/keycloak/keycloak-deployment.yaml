@@ -1,0 +1,230 @@
+# Keycloak Deployment - Official Image with RDS PostgreSQL
+# Single Sign-On (SSO) for all observability tools
+# NIST IA-2: Identification and Authentication
+#
+# Prerequisites:
+#   1. Deploy keycloak-rds.yaml CloudFormation stack
+#   2. External Secrets Operator installed (helm install external-secrets)
+#   3. ClusterSecretStore configured for AWS Secrets Manager
+#
+# Deploy: kubectl apply -f keycloak-deployment.yaml
+# Access: kubectl port-forward svc/keycloak 8180:8080 -n identity
+# Admin: admin / (get from keycloak-admin secret)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: identity
+  labels:
+    istio-injection: enabled
+---
+# ClusterSecretStore for AWS Secrets Manager (cluster-wide)
+# Uses node instance profile for authentication in dev
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      # For dev: uses node instance profile
+      # For prod: use IRSA with serviceAccountRef
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin
+  namespace: identity
+  labels:
+    app: keycloak
+type: Opaque
+stringData:
+  # Change in production! Use external secret management
+  KEYCLOAK_ADMIN: admin
+  KEYCLOAK_ADMIN_PASSWORD: admin-keycloak-dev123
+---
+# ExternalSecret - Syncs RDS credentials from AWS Secrets Manager
+# Automatically creates the keycloak-db Kubernetes secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: keycloak-db
+  namespace: identity
+  labels:
+    app: keycloak
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  target:
+    name: keycloak-db
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        # Construct JDBC URL from RDS endpoint
+        KC_DB_URL: "jdbc:postgresql://{{ .host }}:{{ .port }}/keycloak"
+        KC_DB_USERNAME: "{{ .username }}"
+        KC_DB_PASSWORD: "{{ .password }}"
+  data:
+    - secretKey: username
+      remoteRef:
+        key: infra-agent-dev-keycloak-db-secret
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: infra-agent-dev-keycloak-db-secret
+        property: password
+    - secretKey: host
+      remoteRef:
+        key: infra-agent-dev-keycloak-db-secret
+        property: host
+    - secretKey: port
+      remoteRef:
+        key: infra-agent-dev-keycloak-db-secret
+        property: port
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: identity
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+        sidecar.istio.io/inject: "true"
+      annotations:
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args:
+            - start
+            - --optimized
+            - --http-enabled=true
+            - --hostname-strict=false
+          env:
+            # Admin credentials
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: KEYCLOAK_ADMIN
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: KEYCLOAK_ADMIN_PASSWORD
+            # Database configuration (RDS PostgreSQL)
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db
+                  key: KC_DB_URL
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db
+                  key: KC_DB_USERNAME
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db
+                  key: KC_DB_PASSWORD
+            # Proxy settings (behind ALB/Istio)
+            - name: KC_PROXY
+              value: "edge"
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HOSTNAME_STRICT_HTTPS
+              value: "false"
+            # Health and metrics
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: https
+              containerPort: 8443
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: identity
+  labels:
+    app: keycloak
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: https
+      port: 8443
+      targetPort: 8443
+  selector:
+    app: keycloak
+---
+# Istio PeerAuthentication - Enforce mTLS for Keycloak
+# NIST SC-8: Transmission Confidentiality
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: keycloak-mtls
+  namespace: identity
+spec:
+  selector:
+    matchLabels:
+      app: keycloak
+  mtls:
+    mode: STRICT
+---
+# Istio DestinationRule - Configure mTLS for Keycloak clients
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: keycloak
+  namespace: identity
+spec:
+  host: keycloak.identity.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

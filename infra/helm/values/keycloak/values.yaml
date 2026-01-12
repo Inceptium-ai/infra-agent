@@ -1,0 +1,119 @@
+# Keycloak Helm Values - Identity Provider
+# Single Sign-On (SSO) for all observability tools
+# NIST IA-2: Identification and Authentication
+#
+# NOTE: Bitnami chart has subscription requirements since Aug 2025
+# Using quay.io/keycloak official image instead
+#
+# Chart: bitnami/keycloak (with image override)
+# Deploy: helm upgrade keycloak bitnami/keycloak -n identity -f values.yaml --create-namespace
+
+# Override to use official Keycloak image (not Bitnami)
+image:
+  registry: quay.io
+  repository: keycloak/keycloak
+  tag: "26.0"
+
+# Authentication configuration
+auth:
+  # Admin credentials (change in production!)
+  adminUser: admin
+  # Use existing secret in production:
+  # existingSecret: keycloak-admin-secret
+  # adminPasswordSecretKey: admin-password
+
+# Production mode
+production: false  # Set to true in production (enables HTTPS requirement)
+
+# Proxy configuration (for ALB/Istio)
+proxy: edge  # edge = TLS terminated at load balancer
+
+# Resource allocation
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Replicas
+replicaCount: 1  # Increase for HA in production
+
+# PostgreSQL database
+# NOTE: Disabled for DEV - using Keycloak's embedded H2 database
+# Production should use external PostgreSQL (RDS)
+# Bitnami images require subscription since Aug 2025
+postgresql:
+  enabled: false
+
+# Use embedded H2 database (DEV only - not for production!)
+# For production, configure external database:
+# extraEnvVars:
+#   - name: KC_DB
+#     value: postgres
+#   - name: KC_DB_URL
+#     value: jdbc:postgresql://rds-endpoint:5432/keycloak
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+    http: 80
+    https: 443
+
+# Istio sidecar injection
+podLabels:
+  sidecar.istio.io/inject: "true"
+
+podAnnotations:
+  sidecar.istio.io/inject: "true"
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+# Extra environment variables
+extraEnvVars:
+  # Hostname configuration
+  - name: KC_HOSTNAME_STRICT
+    value: "false"
+  - name: KC_HOSTNAME_STRICT_HTTPS
+    value: "false"
+  # Health check path
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+  # Metrics
+  - name: KC_METRICS_ENABLED
+    value: "true"
+
+# Startup/Liveness/Readiness probes
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
+
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+# Logging
+logging:
+  output: default
+  level: INFO
+
+# Ingress (disabled - using Istio Gateway)
+ingress:
+  enabled: false

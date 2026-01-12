@@ -141,6 +141,13 @@ This document provides a three-way comparison of infrastructure options:
 | **IAM for Pods** | IRSA (all services) | IRSA | IRSA (required) | $0 | $0 | $0 |
 | **Encryption Keys** | KMS (customer-managed) | AWS-managed | KMS | $3 | $1 | $1 |
 | **Mandatory Tags** | 4 tags enforced | Optional | Same | $0 | $0 | $0 |
+| **Identity Provider** | Keycloak (HA) | Keycloak (single) | Amazon Cognito | ~$25 | ~$15 | $5-50* |
+
+**Identity Provider Notes:**
+- **Keycloak**: Open-source OIDC provider with full control over configuration
+- **Cognito**: AWS-managed, $0.0055 per MAU (Monthly Active User)
+- DEV uses single Keycloak instance with RDS db.t4g.micro (~$15/mo)
+- PROD uses HA Keycloak with RDS Multi-AZ db.r6g.large (~$25/mo + $200/mo RDS)
 
 **AWS Pricing Note:** *Amazon Inspector has a free tier (90 days). After that, ~$1.25/instance/month for EC2 scanning.
 
@@ -150,6 +157,58 @@ This document provides a three-way comparison of infrastructure options:
 - AC-6/IA-5 (Least Privilege): IRSA, no long-lived credentials
 - SC-28 (Encryption at Rest): KMS encryption
 - CM-8 (System Inventory): Mandatory tagging
+- IA-2 (Identification): Keycloak OIDC authentication
+- AC-2 (Account Management): Centralized user management in Keycloak
+
+---
+
+## Identity & Authentication (Keycloak)
+
+| Component | PROD Config | DEV Config | AWS Alternative | PROD $/mo | DEV $/mo | AWS $/mo |
+|-----------|-------------|------------|-----------------|-----------|----------|----------|
+| **Keycloak Pods** | 2 (HA) | 1 | N/A | $0 | $0 | N/A |
+| **Database** | RDS Multi-AZ | RDS Single-AZ | N/A | ~$200 | ~$15 | N/A |
+| **PostgreSQL Version** | 17.7 | 17.7 | N/A | - | - | N/A |
+| **Instance Class** | db.r6g.large | db.t4g.micro | N/A | - | - | N/A |
+
+**Why Keycloak Over Cognito:**
+| Feature | Keycloak | Amazon Cognito |
+|---------|----------|----------------|
+| **Full OIDC/SAML** | Yes | Limited SAML |
+| **Custom Authentication Flows** | Full control | Limited |
+| **Identity Brokering** | Yes (LDAP, AD, Social) | Yes (Social only) |
+| **Fine-grained Authorization** | Yes | No |
+| **Open Source** | Yes | No |
+| **Vendor Lock-in** | None | High |
+| **Self-hosted** | Yes | No |
+
+**Services Integrated with Keycloak SSO:**
+| Service | Authentication Method | Namespace |
+|---------|----------------------|-----------|
+| Grafana | OIDC | observability |
+| Headlamp | OIDC | headlamp |
+| Kiali | OIDC | istio-system |
+| Kubecost | OIDC | kubecost |
+
+**NIST Mapping:**
+- IA-2 (Identification and Authentication): Centralized OIDC authentication
+- IA-5 (Authenticator Management): Password policies, MFA support
+- AC-2 (Account Management): User lifecycle management
+- AC-3 (Access Enforcement): Role-based access control
+
+### Known Compliance Gap: SC-8 (Transmission Confidentiality)
+
+| Environment | Istio mTLS Status | Notes |
+|-------------|-------------------|-------|
+| **DEV** | PARTIAL | Only Grafana + Headlamp have sidecars (resource constraint) |
+| **TST** | FULL | All namespaces will have sidecars |
+| **PRD** | FULL | All namespaces will have sidecars |
+
+**DEV Gap Details:**
+- 53 pods in observability/velero/kubecost namespaces lack Istio sidecars
+- Enabling all sidecars requires +5.3 vCPU (only 1.8 vCPU free)
+- Compensating control: All traffic within private VPC (100.64.x.x)
+- Remediation: Add 1 node (+$110/mo) when budget allows
 
 ---
 
@@ -332,12 +391,13 @@ For teams wanting OSS compatibility with managed infrastructure:
 | **Prometheus** | 2 pods | 2 | 0 (CW Agent) |
 | **Grafana** | 2 pods | 1 | 0 (CW Dashboards) |
 | **Kiali** | 2 pods | 1 | 0 (**No equivalent**) |
+| **Keycloak** | 2 pods | 1 | 0 (Cognito) |
 | **Velero** | 4 pods | 0 | 0 (AWS Backup) |
 | **Kubecost** | 4 pods | 0 | 0 (Cost Explorer) |
 | **Trivy** | 1 pod | 0 | 0 (ECR+Inspector) |
 | **Fluent Bit** | 0 | 0 | 3 (DaemonSet) |
 | **CW Agent** | 0 | 0 | 3 (DaemonSet) |
-| **TOTAL** | **~42 pods** | **~7 pods** | **~6 pods** |
+| **TOTAL** | **~44 pods** | **~8 pods** | **~6 pods** |
 
 ---
 
@@ -363,6 +423,111 @@ For teams wanting OSS compatibility with managed infrastructure:
 
 ---
 
+## Actual Resource Metrics (DEV Environment - Jan 2025)
+
+### Cluster Infrastructure
+
+| Metric | Value |
+|--------|-------|
+| **EKS Version** | 1.34 |
+| **Worker Nodes** | 3x t3a.xlarge |
+| **Total Capacity** | 12 vCPU, 48 GB RAM |
+| **Available for Workloads** | ~10.5 vCPU, ~42 GB RAM |
+
+### Current Resource Utilization
+
+| Node | CPU Usage | CPU % | Memory Usage | Memory % |
+|------|-----------|-------|--------------|----------|
+| Node 1 | ~500m | ~12% | ~5 GB | ~33% |
+| Node 2 | ~400m | ~10% | ~3.4 GB | ~22% |
+| Node 3 | ~300m | ~8% | ~1.5 GB | ~10% |
+| **Total** | **~1.2 vCPU** | **~10%** | **~10 GB** | **~21%** |
+
+### Resource Usage by Component
+
+| Component | Pods | CPU Request | Memory Request | Actual CPU | Actual Memory |
+|-----------|------|-------------|----------------|------------|---------------|
+| **LGTM Stack** | | | | | |
+| Grafana | 2 | 200m | 512 Mi | ~20m | ~600 Mi |
+| Loki (backend) | 2 | 200m | 512 Mi | ~25m | ~340 Mi |
+| Loki (read) | 2 | 200m | 512 Mi | ~40m | ~250 Mi |
+| Loki (write) | 2 | 200m | 512 Mi | ~40m | ~200 Mi |
+| Loki (caches) | 2 | 1000m | 11 GB | ~10m | ~11 GB |
+| Mimir (ingesters) | 2 | 400m | 1 GB | ~60m | ~1 GB |
+| Mimir (distributors) | 2 | 400m | 512 Mi | ~40m | ~280 Mi |
+| Mimir (kafka) | 1 | 250m | 512 Mi | ~60m | ~630 Mi |
+| Prometheus | 1 | 200m | 512 Mi | ~30m | ~680 Mi |
+| Tempo | 2 | 200m | 512 Mi | ~8m | ~86 Mi |
+| **Istio** | | | | | |
+| istiod | 2 | 400m | 1 GB | ~6m | ~90 Mi |
+| istio-ingress | 2 | 200m | 256 Mi | ~5m | ~50 Mi |
+| Kiali | 1 | 50m | 128 Mi | ~10m | ~50 Mi |
+| Kiali Operator | 1 | 10m | 64 Mi | ~3m | ~51 Mi |
+| **Operations** | | | | | |
+| Headlamp | 1 | 50m | 64 Mi | ~4m | ~59 Mi |
+| Kubecost | 4 | 500m | 750 Mi | ~6m | ~640 Mi |
+| Velero | 1 | 100m | 128 Mi | ~2m | ~50 Mi |
+| Trivy Operator | 1 | 100m | 200 Mi | ~5m | ~109 Mi |
+| **System** | | | | | |
+| metrics-server | 2 | 200m | 400 Mi | ~10m | ~60 Mi |
+| coredns | 2 | 200m | 140 Mi | ~5m | ~40 Mi |
+| aws-node (CNI) | 3 | 75m | - | ~15m | ~180 Mi |
+| kube-proxy | 3 | 300m | - | ~5m | ~50 Mi |
+| ebs-csi | 5 | 210m | 600 Mi | ~20m | ~200 Mi |
+
+### Resource Summary
+
+| Category | CPU Request | Memory Request | CPU Actual | Memory Actual |
+|----------|-------------|----------------|------------|---------------|
+| LGTM Stack | ~3.0 vCPU | ~15 GB | ~0.3 vCPU | ~14 GB |
+| Istio | ~0.7 vCPU | ~1.5 GB | ~0.02 vCPU | ~240 Mi |
+| Operations | ~0.8 vCPU | ~1.2 GB | ~0.02 vCPU | ~860 Mi |
+| System | ~1.0 vCPU | ~1.2 GB | ~0.05 vCPU | ~530 Mi |
+| **TOTAL** | **~5.5 vCPU** | **~19 GB** | **~0.4 vCPU** | **~16 GB** |
+
+### Headroom Analysis
+
+| Resource | Capacity | Requested | Actual | Headroom |
+|----------|----------|-----------|--------|----------|
+| CPU | 12 vCPU | 5.5 vCPU (46%) | 0.4 vCPU (3%) | 6.5 vCPU (54%) |
+| Memory | 48 GB | 19 GB (40%) | 16 GB (33%) | 29 GB (60%) |
+
+**Observations:**
+- Actual CPU usage is much lower than requested (over-provisioned)
+- Loki caches consume ~11 GB RAM (could be reduced in dev)
+- Mimir Kafka WAL uses significant resources (could be disabled in dev)
+- Grafana HA (2 replicas) could be reduced to 1 in dev
+
+### EKS Add-ons Status
+
+| Add-on | Version | Status |
+|--------|---------|--------|
+| vpc-cni | v1.21.1 | Active |
+| coredns | v1.12.4 | Active |
+| kube-proxy | v1.34.1 | Active |
+| aws-ebs-csi-driver | v1.54.0 | Active |
+| metrics-server | v0.8.0 | Active |
+
+### Security Posture
+
+| Metric | Value |
+|--------|-------|
+| Vulnerability Reports | 50+ |
+| Critical Vulnerabilities | 0 |
+| High Vulnerabilities | 5 |
+| Medium Vulnerabilities | 25 |
+| Trivy Scanning | Continuous |
+
+### Backup Status
+
+| Metric | Value |
+|--------|-------|
+| Storage Location | Available (S3) |
+| Scheduled Backups | 0 |
+| Total Backups | 0 |
+
+---
+
 ## Document Control
 
 | Version | Date | Author | Changes |
@@ -372,3 +537,5 @@ For teams wanting OSS compatibility with managed infrastructure:
 | 1.2 | 2025-01-10 | AI Agent | Moved Kafka details to architecture.md, removed trade-offs from this doc |
 | 1.3 | 2025-01-10 | AI Agent | Added Tempo back for distributed tracing, updated pod/cost counts |
 | 2.0 | 2025-01-10 | AI Agent | Major restructure: Dev vs Prod vs AWS three-way comparison with cost columns in all tables |
+| 2.1 | 2025-01-11 | AI Agent | Added actual resource metrics section with real cluster data |
+| 2.2 | 2025-01-11 | AI Agent | Added Keycloak identity provider section with OIDC integration details |

@@ -22,10 +22,7 @@ Parameters:
     Type: AWS::EC2::VPC::Id
     Description: VPC ID where security groups will be created
 
-  AllowedCidrBlocks:
-    Type: CommaDelimitedList
-    Default: 10.0.0.0/8
-    Description: CIDR blocks allowed for bastion SSH access (corporate/VPN IPs)
+  # NOTE: AllowedCidrBlocks removed - bastion uses SSM Session Manager (no SSH ingress)
 
   Owner:
     Type: String
@@ -51,7 +48,6 @@ Metadata:
           default: Network Configuration
         Parameters:
           - VpcId
-          - AllowedCidrBlocks
 
 Resources:
   #############################################

@@ -8,13 +8,96 @@ This document provides URLs and access instructions for all infrastructure compo
 
 | Component | DEV Access | TST | PRD |
 |-----------|------------|-----|-----|
-| Grafana | `kubectl port-forward` → http://localhost:3000 | ALB (future) | ALB + MFA |
-| Kiali | `kubectl port-forward` → http://localhost:20001 | ALB (future) | ALB + MFA |
-| Headlamp | `kubectl port-forward` → http://localhost:8080 | ALB (future) | ALB + MFA |
+| Grafana | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
+| Loki | Internal (via Grafana) | Internal | Internal |
+| Tempo | Internal (via Grafana) | Internal | Internal |
+| Prometheus | Internal (via Grafana) | Internal | Internal |
+| Kiali | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
+| Headlamp | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
 | Kubecost | `kubectl port-forward` → http://localhost:9091 | ALB (future) | ALB + MFA |
-| Prometheus | `kubectl port-forward` → http://localhost:9090 | Internal | Internal |
-| Loki | Internal only (via Grafana) | Same | Same |
 | Mimir | Internal only (via Grafana) | Same | Same |
+
+---
+
+## Internet Access via ALB + Cognito (DEV)
+
+The observability tools are accessible remotely via Application Load Balancer with AWS Cognito authentication.
+
+### ALB URLs (Internet-Accessible)
+
+| Service | URL | Authentication |
+|---------|-----|----------------|
+| **Grafana** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/` | Cognito OIDC |
+| **Headlamp** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp` | Cognito OIDC |
+| **Kiali** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kiali` | Cognito OIDC |
+
+### Authentication Flow
+
+1. Navigate to any ALB URL above
+2. You'll be redirected to AWS Cognito login page
+3. Enter your credentials (email/password)
+4. MFA prompt (if enabled for production)
+5. On success, redirected back to the service
+
+### Service-Specific Authentication
+
+| Service | ALB/Cognito Auth | Additional Auth Required |
+|---------|------------------|-------------------------|
+| **Grafana** | ✅ Cognito OIDC | ❌ None - JWT auto-login via `X-Amzn-Oidc-Data` header |
+| **Kiali** | ✅ Cognito OIDC | ❌ None - Anonymous mode (ALB already authenticated) |
+| **Headlamp** | ✅ Cognito OIDC | ⚠️ **K8s Token Required** - See note below |
+
+#### Headlamp Token Requirement (Known Limitation)
+
+Headlamp requires a Kubernetes service account token to interact with the K8s API, regardless of ALB authentication. This is a fundamental architectural constraint - Headlamp needs K8s API credentials to function.
+
+**Workaround:** Generate a token after Cognito login:
+```bash
+kubectl create token headlamp -n headlamp --duration=8h
+```
+
+**Future Improvement Options:**
+1. Configure Headlamp OIDC with Cognito (complex setup)
+2. Auto-inject token via init container
+3. Use AWS IAM Roles for Service Accounts (IRSA) with EKS Pod Identity
+
+### Cognito User Management
+
+**Cognito User Pool:** `infra-agent-dev-users` (us-east-1_49eiiC4Ew)
+
+**Create a new user:**
+```bash
+aws cognito-idp admin-create-user \
+  --user-pool-id us-east-1_49eiiC4Ew \
+  --username user@example.com \
+  --user-attributes Name=email,Value=user@example.com \
+  --temporary-password TempPass123! \
+  --region us-east-1
+```
+
+**Add user to group:**
+```bash
+# Groups: admins, operators, viewers
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id us-east-1_49eiiC4Ew \
+  --username user@example.com \
+  --group-name admins \
+  --region us-east-1
+```
+
+### NIST Compliance
+
+| Control | Implementation |
+|---------|---------------|
+| NIST IA-2 | Cognito authentication with optional MFA |
+| NIST IA-5 | Password policy (12+ chars, complexity requirements) |
+| NIST SC-8 | HTTPS/TLS 1.3 encryption via ALB |
+
+### SSL Certificate Note
+
+DEV uses a self-signed certificate. Your browser will show a security warning - this is expected. Click "Advanced" → "Proceed" to continue.
+
+For production, use a proper ACM certificate with a custom domain.
 
 ---
 
@@ -104,18 +187,29 @@ Save this as `~/bin/infra-agent-services.sh` or use `scripts/services.sh`:
 #!/bin/bash
 # Port forward all services (run after tunnel is established)
 echo "Port forwarding all services..."
+
+# Observability
 kubectl port-forward svc/grafana 3000:3000 -n observability &
+kubectl port-forward svc/loki-gateway 3100:3100 -n observability &
+kubectl port-forward svc/tempo 3200:3200 -n observability &
+kubectl port-forward svc/prometheus-server 9090:80 -n observability &
+
+# Service Mesh
 kubectl port-forward svc/kiali 20001:20001 -n istio-system &
+
+# Operations
 kubectl port-forward svc/headlamp 8080:80 -n headlamp &
 kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost &
-kubectl port-forward svc/prometheus-server 9090:80 -n observability &
+
 echo ""
 echo "Services available at:"
-echo "  Grafana:    http://localhost:3000"
-echo "  Kiali:      http://localhost:20001/kiali"
-echo "  Headlamp:   http://localhost:8080"
-echo "  Kubecost:   http://localhost:9091"
-echo "  Prometheus: http://localhost:9090"
+echo "  Grafana:    http://localhost:3000     (dashboards)"
+echo "  Loki:       http://localhost:3100     (logs)"
+echo "  Tempo:      http://localhost:3200     (traces)"
+echo "  Prometheus: http://localhost:9090     (metrics)"
+echo "  Kiali:      http://localhost:20001/kiali  (traffic)"
+echo "  Headlamp:   http://localhost:8080     (K8s admin)"
+echo "  Kubecost:   http://localhost:9091     (costs)"
 echo ""
 echo "Press Ctrl+C to stop all port forwards"
 wait
@@ -253,6 +347,49 @@ container_memory_working_set_bytes{namespace="infra-agent"}
 
 # Request latency P99
 histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+```
+
+---
+
+### Tempo (Distributed Tracing)
+**Purpose:** Distributed tracing backend (S3-backed)
+
+| Environment | Internal URL | Query Language |
+|-------------|--------------|----------------|
+| DEV | `http://tempo.observability.svc:3200` | TraceQL |
+| TST | `http://tempo.observability.svc:3200` | TraceQL |
+| PRD | `http://tempo.observability.svc:3200` | TraceQL |
+
+**Access via Port Forward (DEV):**
+```bash
+kubectl port-forward svc/tempo 3200:3200 -n observability
+# Access: http://localhost:3200
+```
+
+**Access via Grafana:**
+1. Open Grafana
+2. Navigate to Explore
+3. Select "Tempo" data source
+4. Use TraceQL queries or search by trace ID
+
+**Example Queries:**
+```traceql
+# Find traces by service name
+{resource.service.name="chat-agent"}
+
+# Find traces with errors
+{status=error}
+
+# Find traces with high latency (>1s)
+{duration>1s}
+
+# Find traces by HTTP method
+{span.http.method="POST"}
+```
+
+**Data Flow:**
+```
+[App with OTEL SDK] → [OTLP endpoint] → [Tempo Distributor] → [S3 Storage]
 ```
 
 ---

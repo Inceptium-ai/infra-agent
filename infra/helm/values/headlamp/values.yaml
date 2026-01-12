@@ -1,5 +1,16 @@
 # Headlamp Helm Values - Kubernetes Admin Console
 # NIST AC-2: Account Management (RBAC-based access)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+
+# Istio sidecar injection
+# Label required for webhook objectSelector matching
+podLabels:
+  sidecar.istio.io/inject: "true"
+
+# Annotations for injection configuration
+podAnnotations:
+  sidecar.istio.io/inject: "true"
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
 # Resource limits
 resources:

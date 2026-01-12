@@ -1,0 +1,242 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Cognito User Pool for Observability Stack Authentication
+  NIST IA-2: Identification and Authentication
+  NIST IA-5: Authenticator Management
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Description: Environment name
+
+  ALBDNSName:
+    Type: String
+    Default: ""
+    Description: ALB DNS Name for OAuth2 callback (leave empty for initial deploy)
+
+  Owner:
+    Type: String
+    Default: platform-team
+    Description: Team responsible for these resources
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, 'prd']
+  HasALBDNS: !Not [!Equals [!Ref ALBDNSName, ""]]
+
+Resources:
+  #############################################
+  # Cognito User Pool
+  #############################################
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ProjectName}-${Environment}-users'
+
+      # Password policy (NIST IA-5)
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+
+      # MFA configuration (NIST IA-2(1))
+      MfaConfiguration: !If [IsProduction, 'ON', 'OPTIONAL']
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+
+      # Account recovery
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+      # Auto-verify email
+      AutoVerifiedAttributes:
+        - email
+
+      # Username configuration
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+
+      # Schema attributes
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+
+      # Email configuration (using Cognito default)
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+
+      # Advanced security (NIST SI-4)
+      UserPoolAddOns:
+        AdvancedSecurityMode: !If [IsProduction, 'ENFORCED', 'AUDIT']
+
+      UserPoolTags:
+        Environment: !Ref Environment
+        Project: !Ref ProjectName
+        Owner: !Ref Owner
+        NIST_Control: IA-2_IA-5
+
+  #############################################
+  # User Pool Domain (for hosted UI)
+  #############################################
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${ProjectName}-${Environment}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+  #############################################
+  # App Client for ALB
+  #############################################
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${ProjectName}-${Environment}-alb-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: true
+
+      # Auth flows for hosted UI (required for login)
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+      # OAuth2 configuration
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+
+      # Callback URLs for OAuth2 (ALB endpoint)
+      CallbackURLs:
+        - !If
+          - HasALBDNS
+          - !Sub 'https://${ALBDNSName}/oauth2/idpresponse'
+          - 'https://localhost/oauth2/idpresponse'
+
+      # Logout URLs
+      LogoutURLs:
+        - !If
+          - HasALBDNS
+          - !Sub 'https://${ALBDNSName}/logout'
+          - 'https://localhost/logout'
+
+      SupportedIdentityProviders:
+        - COGNITO
+
+      # Token validity
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+      # Security settings
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+      # Read/write attributes
+      ReadAttributes:
+        - email
+        - name
+        - email_verified
+      WriteAttributes:
+        - email
+        - name
+
+  #############################################
+  # Admin User Group
+  #############################################
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admins
+      Description: Administrators with full access
+      UserPoolId: !Ref UserPool
+      Precedence: 1
+
+  #############################################
+  # Operator User Group
+  #############################################
+  OperatorGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: operators
+      Description: Operators with view and limited action access
+      UserPoolId: !Ref UserPool
+      Precedence: 10
+
+  #############################################
+  # Viewer User Group
+  #############################################
+  ViewerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: viewers
+      Description: Read-only access to dashboards
+      UserPoolId: !Ref UserPool
+      Precedence: 100
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-user-pool-id'
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt UserPool.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-user-pool-arn'
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-client-id'
+
+  UserPoolDomain:
+    Description: Cognito User Pool Domain
+    Value: !Sub '${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-domain'
+
+  CognitoLoginURL:
+    Description: Cognito Hosted UI Login URL
+    Value: !Sub 'https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/login'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-login-url'
+
+  OIDCIssuer:
+    Description: OIDC Issuer URL for ALB authentication
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cognito-oidc-issuer'

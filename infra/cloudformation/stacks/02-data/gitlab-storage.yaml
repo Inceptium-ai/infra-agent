@@ -23,9 +23,11 @@ Parameters:
     Type: String
     Description: ARN of the EKS OIDC Provider for IRSA
 
-  EKSClusterName:
+  OIDCProviderUrl:
     Type: String
-    Description: Name of the EKS cluster
+    Description: URL of the EKS OIDC Provider (without https://)
+
+  # NOTE: EKSClusterName removed - not used in this template
 
   GitLabNamespace:
     Type: String
@@ -298,21 +300,36 @@ Resources:
           Value: tmp
 
   # IAM Role for GitLab (IRSA)
+  # NOTE: Using Fn::Sub with JSON string to allow dynamic keys in Condition
   GitLabRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${ProjectName}-${Environment}-gitlab-role'
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref OIDCProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                !Sub '${OIDCProviderArn}:sub': !Sub 'system:serviceaccount:${GitLabNamespace}:${GitLabServiceAccount}'
-                !Sub '${OIDCProviderArn}:aud': 'sts.amazonaws.com'
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${OidcArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcUrl}:sub": "system:serviceaccount:${Namespace}:${ServiceAccount}",
+                      "${OidcUrl}:aud": "sts.amazonaws.com"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref OIDCProviderArn
+            OidcUrl: !Ref OIDCProviderUrl
+            Namespace: !Ref GitLabNamespace
+            ServiceAccount: !Ref GitLabServiceAccount
       Policies:
         - PolicyName: GitLabS3Access
           PolicyDocument:

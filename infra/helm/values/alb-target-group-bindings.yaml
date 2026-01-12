@@ -1,0 +1,49 @@
+# TargetGroupBinding CRDs for AWS Load Balancer Controller
+# These bind Kubernetes services to ALB Target Groups via IaC
+# NIST SC-8: Transmission Confidentiality (via ALB HTTPS)
+# NIST CM-3: Configuration Change Control (IaC managed)
+#
+# Requires: AWS Load Balancer Controller installed with TargetGroupBinding CRD
+# Deploy: kubectl apply -f infra/helm/values/alb-target-group-bindings.yaml
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: grafana-tgb
+  namespace: observability
+  labels:
+    app: grafana
+spec:
+  serviceRef:
+    name: grafana-alb
+    port: 3000
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-grafana-tg/d5271fe11c91ff65
+  targetType: instance
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: headlamp-tgb
+  namespace: headlamp
+  labels:
+    app: headlamp
+spec:
+  serviceRef:
+    name: headlamp-alb
+    port: 80
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-headlamp-tg/bd45f0f77dfae8e7
+  targetType: instance
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kiali-tgb
+  namespace: istio-system
+  labels:
+    app: kiali
+spec:
+  serviceRef:
+    name: kiali-alb
+    port: 20001
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-kiali-tg/7cc2725c4f1cc5e9
+  targetType: instance

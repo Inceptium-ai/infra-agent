@@ -1,5 +1,14 @@
 # Grafana Helm Values - Observability Dashboard
 # NIST AU-2: Audit Events (visualization)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+
+# Istio sidecar injection (temporarily disabled due to version mismatch)
+podLabels:
+  sidecar.istio.io/inject: "false"
+
+# Annotations for injection configuration
+podAnnotations:
+  sidecar.istio.io/inject: "false"
 
 # Replica count for HA
 replicas: 2
@@ -50,6 +59,16 @@ grafana.ini:
 
   auth.anonymous:
     enabled: false
+
+  # JWT auth for ALB + Cognito authentication
+  # ALB passes user info in X-Amzn-Oidc-Data header as JWT
+  auth.jwt:
+    enabled: true
+    header_name: X-Amzn-Oidc-Data
+    email_claim: email
+    username_claim: email
+    auto_sign_up: true
+    jwk_set_url: https://public-keys.auth.elb.us-east-1.amazonaws.com
 
   security:
     admin_user: admin

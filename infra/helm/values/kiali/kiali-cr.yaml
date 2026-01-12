@@ -4,9 +4,9 @@ metadata:
   name: kiali
   namespace: istio-system
 spec:
-  # Authentication - token based
+  # Authentication - anonymous (ALB + Cognito handles auth)
   auth:
-    strategy: token
+    strategy: anonymous
 
   # Deployment configuration
   deployment:

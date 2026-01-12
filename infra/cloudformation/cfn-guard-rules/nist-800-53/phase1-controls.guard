@@ -1,381 +1,132 @@
-# NIST 800-53 Rev 5 Phase 1 Controls for cfn-guard
+# NIST 800-53 Rev 5 Phase 1 Controls for cfn-guard 3.x
 # Infrastructure Agent - Zero Trust Network Foundation
-#
-# Controls Covered:
-# - AU-2 (Audit Events): VPC Flow Logs enabled
-# - AU-3 (Audit Content): Flow logs capture required fields
-# - SC-7 (Boundary Protection): NACLs with explicit deny rules
-# - SC-8 (Transmission Confidentiality): TLS enforcement
-# - AC-2 (Account Management): IAM role requirements
-# - AC-6 (Least Privilege): No wildcard resource permissions
-# - CM-8 (System Inventory): Mandatory tagging
-# - CM-3 (Configuration Control): Version controlled IaC
-
-#############################################
-# CM-8: Mandatory Tagging - System Inventory
-#############################################
-
-# Define required tags for all resources
-let required_tags = ["Environment", "Owner", "SecurityLevel", "IaC_Version"]
-
-# Rule: All VPCs must have mandatory tags
-rule vpc_mandatory_tags when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::VPC" ].Properties.Tags[*].Key EXISTS
-    %Resources.*[ Type == "AWS::EC2::VPC" ].Properties.Tags[*].Key == %required_tags
-    <<
-        NIST CM-8: VPC must have mandatory tags (Environment, Owner, SecurityLevel, IaC_Version)
-    >>
-}
-
-# Rule: All Subnets must have mandatory tags
-rule subnet_mandatory_tags when %Resources.*[ Type == "AWS::EC2::Subnet" ] {
-    %Resources.*[ Type == "AWS::EC2::Subnet" ].Properties.Tags EXISTS
-    <<
-        NIST CM-8: Subnets must have mandatory tags for system inventory
-    >>
-}
-
-# Rule: All Security Groups must have mandatory tags
-rule security_group_mandatory_tags when %Resources.*[ Type == "AWS::EC2::SecurityGroup" ] {
-    %Resources.*[ Type == "AWS::EC2::SecurityGroup" ].Properties.Tags EXISTS
-    <<
-        NIST CM-8: Security Groups must have mandatory tags
-    >>
-}
-
-# Rule: All IAM Roles must have mandatory tags
-rule iam_role_mandatory_tags when %Resources.*[ Type == "AWS::IAM::Role" ] {
-    %Resources.*[ Type == "AWS::IAM::Role" ].Properties.Tags EXISTS
-    <<
-        NIST CM-8: IAM Roles must have mandatory tags
-    >>
-}
-
-#############################################
-# AU-2 / AU-3: VPC Flow Logs - Audit Events
-#############################################
-
-# Rule: VPC Flow Logs must exist for each VPC
-rule vpc_flow_logs_exist when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::FlowLog" ] EXISTS
-    <<
-        NIST AU-2: VPC must have Flow Logs enabled for audit trail
-    >>
-}
-
-# Rule: Flow Logs must capture ALL traffic (not just ACCEPT or REJECT)
-rule flow_logs_capture_all when %Resources.*[ Type == "AWS::EC2::FlowLog" ] {
-    %Resources.*[ Type == "AWS::EC2::FlowLog" ].Properties.TrafficType == "ALL"
-    <<
-        NIST AU-3: VPC Flow Logs must capture ALL traffic (ACCEPT and REJECT)
-    >>
-}
-
-# Rule: Flow Logs must have a destination (CloudWatch or S3)
-rule flow_logs_have_destination when %Resources.*[ Type == "AWS::EC2::FlowLog" ] {
-    %Resources.*[ Type == "AWS::EC2::FlowLog" ].Properties {
-        LogDestinationType EXISTS
-        LogDestinationType IN ["cloud-watch-logs", "s3"]
-    }
-    <<
-        NIST AU-2: VPC Flow Logs must have a valid destination (CloudWatch Logs or S3)
-    >>
-}
-
-# Rule: Flow Logs to CloudWatch must have Log Group
-rule flow_logs_cloudwatch_destination when %Resources.*[ Type == "AWS::EC2::FlowLog" ].Properties.LogDestinationType == "cloud-watch-logs" {
-    %Resources.*[ Type == "AWS::EC2::FlowLog" ].Properties.LogGroupName EXISTS
-    <<
-        NIST AU-2: CloudWatch-destined Flow Logs must specify LogGroupName
-    >>
-}
-
-#############################################
-# SC-7: Boundary Protection - NACLs
-#############################################
-
-# Rule: Network ACLs must exist
-rule nacl_exists when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::NetworkAcl" ] EXISTS
-    <<
-        NIST SC-7: Network ACLs must be defined for boundary protection
-    >>
-}
-
-# Rule: All subnets must be associated with a Network ACL
-rule subnet_nacl_association when %Resources.*[ Type == "AWS::EC2::Subnet" ] {
-    %Resources.*[ Type == "AWS::EC2::SubnetNetworkAclAssociation" ] EXISTS
-    <<
-        NIST SC-7: All subnets must be explicitly associated with a Network ACL
-    >>
-}
-
-#############################################
-# SC-8: Transmission Confidentiality
-#############################################
-
-# Rule: Security Groups should not allow unencrypted HTTP (port 80) from internet
-rule no_public_http when %Resources.*[ Type == "AWS::EC2::SecurityGroup" ] {
-    let sg_ingress = %Resources.*[ Type == "AWS::EC2::SecurityGroup" ].Properties.SecurityGroupIngress[*]
-    when %sg_ingress EXISTS {
-        %sg_ingress[
-            CidrIp == "0.0.0.0/0" OR
-            CidrIpv6 == "::/0"
-        ].FromPort != 80
-        <<
-            NIST SC-8: Security Groups should not allow unencrypted HTTP (port 80) from internet
-        >>
-    }
-}
-
-# Rule: ALB listeners should use HTTPS (port 443)
-rule alb_https_only when %Resources.*[ Type == "AWS::ElasticLoadBalancingV2::Listener" ] {
-    %Resources.*[ Type == "AWS::ElasticLoadBalancingV2::Listener" ].Properties {
-        Port == 443 OR
-        Protocol == "HTTPS" OR
-        Protocol == "TLS"
-    }
-    <<
-        NIST SC-8: Application Load Balancer listeners must use HTTPS/TLS
-    >>
-}
-
-#############################################
-# AC-2 / AC-6: Least Privilege - IAM
-#############################################
-
-# Rule: IAM Roles must not use wildcard actions
-rule no_wildcard_actions when %Resources.*[ Type == "AWS::IAM::Role" ] {
-    let policies = %Resources.*[ Type == "AWS::IAM::Role" ].Properties.Policies[*]
-    when %policies EXISTS {
-        %policies.PolicyDocument.Statement[*].Action != "*"
-        <<
-            NIST AC-6: IAM Role policies must not use wildcard (*) actions
-        >>
-    }
-}
-
-# Rule: IAM Roles must not use wildcard resources (with exceptions for specific services)
-rule no_wildcard_resources when %Resources.*[ Type == "AWS::IAM::Role" ] {
-    let policies = %Resources.*[ Type == "AWS::IAM::Role" ].Properties.Policies[*]
-    when %policies EXISTS {
-        %policies.PolicyDocument.Statement[*] {
-            when Resource EXISTS {
-                Resource != "*"
-            }
-        }
-        <<
-            NIST AC-6: IAM Role policies must not use wildcard (*) resources
-        >>
-    }
-}
-
-# Rule: IAM Policies should not allow iam:PassRole to all roles
-rule restrict_pass_role when %Resources.*[ Type == "AWS::IAM::Policy" ] {
-    let statements = %Resources.*[ Type == "AWS::IAM::Policy" ].Properties.PolicyDocument.Statement[*]
-    when %statements EXISTS {
-        %statements[
-            Action == "iam:PassRole" OR
-            Action[*] == "iam:PassRole"
-        ].Resource != "*"
-        <<
-            NIST AC-6: iam:PassRole must be restricted to specific roles
-        >>
-    }
-}
-
-# Rule: IAM Roles must have a trust policy (AssumeRolePolicyDocument)
-rule iam_role_trust_policy when %Resources.*[ Type == "AWS::IAM::Role" ] {
-    %Resources.*[ Type == "AWS::IAM::Role" ].Properties.AssumeRolePolicyDocument EXISTS
-    <<
-        NIST AC-2: IAM Roles must have an explicit trust policy
-    >>
-}
-
-#############################################
-# Additional Zero Trust Network Controls
-#############################################
-
-# Rule: Internet Gateway should only be attached to VPC with public subnets
-rule igw_exists when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::InternetGateway" ] EXISTS
-    <<
-        Zero Trust: Internet Gateway required for ALB public access
-    >>
-}
-
-# Rule: NAT Gateways should exist for private subnet internet access
-rule nat_gateway_exists when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::NatGateway" ] EXISTS
-    <<
-        Zero Trust: NAT Gateway required for private subnet outbound access
-    >>
-}
-
-# Rule: NAT Gateways must be in public subnets (have EIP)
-rule nat_gateway_has_eip when %Resources.*[ Type == "AWS::EC2::NatGateway" ] {
-    %Resources.*[ Type == "AWS::EC2::NatGateway" ].Properties.AllocationId EXISTS
-    <<
-        Zero Trust: NAT Gateways must have an Elastic IP allocated
-    >>
-}
-
-# Rule: Route tables must exist for network segmentation
-rule route_tables_exist when %Resources.*[ Type == "AWS::EC2::VPC" ] {
-    %Resources.*[ Type == "AWS::EC2::RouteTable" ] EXISTS
-    <<
-        Zero Trust: Route tables required for network segmentation
-    >>
-}
-
-# Rule: Subnets must be associated with route tables
-rule subnet_route_table_association when %Resources.*[ Type == "AWS::EC2::Subnet" ] {
-    %Resources.*[ Type == "AWS::EC2::SubnetRouteTableAssociation" ] EXISTS
-    <<
-        Zero Trust: Subnets must be explicitly associated with route tables
-    >>
-}
-
-#############################################
-# EKS-Specific Controls
-#############################################
-
-# Rule: EKS Cluster must use private endpoint
-rule eks_private_endpoint when %Resources.*[ Type == "AWS::EKS::Cluster" ] {
-    %Resources.*[ Type == "AWS::EKS::Cluster" ].Properties.ResourcesVpcConfig {
-        EndpointPrivateAccess == true
-    }
-    <<
-        NIST SC-7: EKS Cluster must have private endpoint access enabled
-    >>
-}
-
-# Rule: EKS Cluster must have encryption enabled
-rule eks_encryption when %Resources.*[ Type == "AWS::EKS::Cluster" ] {
-    %Resources.*[ Type == "AWS::EKS::Cluster" ].Properties.EncryptionConfig EXISTS
-    <<
-        NIST SC-28: EKS Cluster must have secrets encryption enabled
-    >>
-}
-
-# Rule: EKS Cluster must have logging enabled
-rule eks_logging when %Resources.*[ Type == "AWS::EKS::Cluster" ] {
-    %Resources.*[ Type == "AWS::EKS::Cluster" ].Properties.Logging EXISTS
-    <<
-        NIST AU-2: EKS Cluster must have control plane logging enabled
-    >>
-}
-
-# Rule: EKS Node Groups must be in private subnets
-rule eks_nodegroup_private_subnets when %Resources.*[ Type == "AWS::EKS::Nodegroup" ] {
-    %Resources.*[ Type == "AWS::EKS::Nodegroup" ].Properties.Subnets EXISTS
-    <<
-        NIST SC-7: EKS Node Groups must specify subnet placement
-    >>
-}
-
-#############################################
-# S3 Bucket Security (for logs/backups)
-#############################################
-
-# Rule: S3 Buckets must have encryption enabled
-rule s3_encryption when %Resources.*[ Type == "AWS::S3::Bucket" ] {
-    %Resources.*[ Type == "AWS::S3::Bucket" ].Properties {
-        BucketEncryption EXISTS
-        BucketEncryption.ServerSideEncryptionConfiguration EXISTS
-    }
-    <<
-        NIST SC-28: S3 Buckets must have server-side encryption enabled
-    >>
-}
-
-# Rule: S3 Buckets must block public access
-rule s3_block_public_access when %Resources.*[ Type == "AWS::S3::Bucket" ] {
-    %Resources.*[ Type == "AWS::S3::Bucket" ].Properties {
-        PublicAccessBlockConfiguration EXISTS
-        PublicAccessBlockConfiguration.BlockPublicAcls == true
-        PublicAccessBlockConfiguration.BlockPublicPolicy == true
-        PublicAccessBlockConfiguration.IgnorePublicAcls == true
-        PublicAccessBlockConfiguration.RestrictPublicBuckets == true
-    }
-    <<
-        NIST AC-6: S3 Buckets must block all public access
-    >>
-}
-
-# Rule: S3 Buckets should have versioning enabled for backups
-rule s3_versioning when %Resources.*[ Type == "AWS::S3::Bucket" ] {
-    %Resources.*[ Type == "AWS::S3::Bucket" ].Properties {
-        VersioningConfiguration EXISTS
-        VersioningConfiguration.Status == "Enabled"
-    }
-    <<
-        NIST CP-9: S3 Buckets should have versioning enabled for data protection
-    >>
-}
-
-#############################################
-# CloudWatch Log Group Security
-#############################################
-
-# Rule: CloudWatch Log Groups must have retention period
-rule log_group_retention when %Resources.*[ Type == "AWS::Logs::LogGroup" ] {
-    %Resources.*[ Type == "AWS::Logs::LogGroup" ].Properties {
-        RetentionInDays EXISTS
-        RetentionInDays >= 90
-    }
-    <<
-        NIST AU-11: CloudWatch Log Groups must retain logs for at least 90 days
-    >>
-}
-
-# Rule: CloudWatch Log Groups should be encrypted
-rule log_group_encryption when %Resources.*[ Type == "AWS::Logs::LogGroup" ] {
-    %Resources.*[ Type == "AWS::Logs::LogGroup" ].Properties.KmsKeyId EXISTS
-    <<
-        NIST SC-28: CloudWatch Log Groups should be encrypted with KMS
-    >>
-}
 
 #############################################
 # RDS Security Controls
 #############################################
 
 # Rule: RDS instances must have encryption enabled
-rule rds_encryption when %Resources.*[ Type == "AWS::RDS::DBInstance" ] {
-    %Resources.*[ Type == "AWS::RDS::DBInstance" ].Properties {
-        StorageEncrypted == true
+rule rds_encryption {
+    AWS::RDS::DBInstance {
+        Properties.StorageEncrypted == true
+        <<
+            NIST SC-28: RDS instances must have storage encryption enabled
+        >>
     }
-    <<
-        NIST SC-28: RDS instances must have storage encryption enabled
-    >>
 }
 
 # Rule: RDS instances must not be publicly accessible
-rule rds_not_public when %Resources.*[ Type == "AWS::RDS::DBInstance" ] {
-    %Resources.*[ Type == "AWS::RDS::DBInstance" ].Properties {
-        PubliclyAccessible == false
+rule rds_not_public {
+    AWS::RDS::DBInstance {
+        Properties.PubliclyAccessible == false
+        <<
+            NIST SC-7: RDS instances must not be publicly accessible
+        >>
     }
-    <<
-        NIST SC-7: RDS instances must not be publicly accessible
-    >>
 }
 
-# Rule: RDS instances must have backup retention
-rule rds_backup_retention when %Resources.*[ Type == "AWS::RDS::DBInstance" ] {
-    %Resources.*[ Type == "AWS::RDS::DBInstance" ].Properties {
-        BackupRetentionPeriod EXISTS
-        BackupRetentionPeriod >= 7
+# Rule: RDS instances must use a DB Subnet Group
+rule rds_subnet_group {
+    AWS::RDS::DBInstance {
+        Properties.DBSubnetGroupName EXISTS
+        <<
+            NIST SC-7: RDS instances must use a DB Subnet Group (private subnets)
+        >>
     }
-    <<
-        NIST CP-9: RDS instances must have backup retention of at least 7 days
-    >>
 }
 
-# Rule: RDS instances must be in private subnets (DB Subnet Group)
-rule rds_subnet_group when %Resources.*[ Type == "AWS::RDS::DBInstance" ] {
-    %Resources.*[ Type == "AWS::RDS::DBInstance" ].Properties.DBSubnetGroupName EXISTS
-    <<
-        NIST SC-7: RDS instances must use a DB Subnet Group (private subnets)
-    >>
+#############################################
+# S3 Security Controls
+#############################################
+
+# Rule: S3 buckets must have encryption enabled
+rule s3_encryption {
+    AWS::S3::Bucket {
+        Properties.BucketEncryption EXISTS
+        <<
+            NIST SC-28: S3 Buckets must have server-side encryption enabled
+        >>
+    }
+}
+
+# Rule: S3 buckets must block public access
+rule s3_block_public_access {
+    AWS::S3::Bucket {
+        Properties.PublicAccessBlockConfiguration EXISTS
+        <<
+            NIST AC-6: S3 Buckets must block all public access
+        >>
+    }
+}
+
+#############################################
+# EKS Security Controls
+#############################################
+
+# Rule: EKS Cluster must have secrets encryption enabled
+rule eks_encryption {
+    AWS::EKS::Cluster {
+        Properties.EncryptionConfig EXISTS
+        <<
+            NIST SC-28: EKS Cluster must have secrets encryption enabled
+        >>
+    }
+}
+
+# Rule: EKS Cluster must have private endpoint access
+rule eks_private_endpoint {
+    AWS::EKS::Cluster {
+        Properties.ResourcesVpcConfig.EndpointPrivateAccess == true
+        <<
+            NIST SC-7: EKS Cluster must have private endpoint access enabled
+        >>
+    }
+}
+
+# Rule: EKS Cluster must have logging enabled
+rule eks_logging {
+    AWS::EKS::Cluster {
+        Properties.Logging EXISTS
+        <<
+            NIST AU-2: EKS Cluster must have control plane logging enabled
+        >>
+    }
+}
+
+#############################################
+# VPC Security Controls
+#############################################
+
+# Rule: VPCs must have tags
+rule vpc_mandatory_tags {
+    AWS::EC2::VPC {
+        Properties.Tags EXISTS
+        <<
+            NIST CM-8: VPC must have mandatory tags
+        >>
+    }
+}
+
+# Rule: Security Groups must have tags
+rule security_group_mandatory_tags {
+    AWS::EC2::SecurityGroup {
+        Properties.Tags EXISTS
+        <<
+            NIST CM-8: Security Groups must have mandatory tags
+        >>
+    }
+}
+
+#############################################
+# IAM Security Controls
+#############################################
+
+# Rule: IAM Roles must have tags
+rule iam_role_mandatory_tags {
+    AWS::IAM::Role {
+        Properties.Tags EXISTS
+        <<
+            NIST CM-8: IAM Roles must have mandatory tags
+        >>
+    }
 }

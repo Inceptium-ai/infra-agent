@@ -38,9 +38,11 @@ cr:
         in_cluster_url: "http://grafana.observability.svc.cluster.local:3000"
         url: "http://localhost:3000"
 
-      # Tracing - disabled since we removed Tempo
+      # Tracing - Tempo integration
       tracing:
-        enabled: false
+        enabled: true
+        in_cluster_url: "http://tempo.observability.svc.cluster.local:3200"
+        url: "http://localhost:3200"
 
     # Istio configuration
     istio_namespace: istio-system
@@ -51,10 +53,8 @@ cr:
       web_fqdn: ""
       web_root: "/kiali"
 
-    # Features
+    # Features - validation settings
     kiali_feature_flags:
-      clustering:
-        enabled: true
       validations:
         ignore:
           - "KIA1201"  # Ignore missing sidecar warnings for system namespaces

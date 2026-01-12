@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Keycloak RDS PostgreSQL Database
+  NIST IA-2: Identification and Authentication
+  NIST SC-28: Protection of Information at Rest (encrypted storage)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Description: Environment name
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues:
+      - db.t4g.micro    # Graviton - cheapest (~$12/mo)
+      - db.t4g.small    # Graviton - (~$24/mo)
+      - db.t4g.medium   # Graviton - (~$48/mo)
+      - db.t3.micro     # Intel fallback
+      - db.t3.small
+    Description: RDS instance class (t4g = Graviton/ARM, cheaper)
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: Allocated storage in GB
+
+  DBName:
+    Type: String
+    Default: keycloak
+    Description: Database name
+
+  DBUsername:
+    Type: String
+    Default: keycloak
+    NoEcho: true
+    Description: Database admin username
+
+  MultiAZ:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable Multi-AZ deployment (for production)
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, 'prd']
+  EnableMultiAZ: !Equals [!Ref MultiAZ, 'true']
+
+Resources:
+  # Security Group for Keycloak RDS
+  KeycloakDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${Environment}-keycloak-db-sg'
+      GroupDescription: Security group for Keycloak RDS PostgreSQL
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-vpc-id'
+      SecurityGroupIngress:
+        # Allow from EKS nodes security group
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId:
+            Fn::ImportValue: !Sub '${ProjectName}-${Environment}-eks-nodes-sg-id'
+          Description: PostgreSQL from EKS nodes
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-keycloak-db-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: keycloak
+
+  # DB Subnet Group - uses private subnets from VPC stack
+  KeycloakDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${ProjectName}-${Environment}-keycloak-subnet-group'
+      DBSubnetGroupDescription: Subnet group for Keycloak RDS
+      SubnetIds: !Split
+        - ','
+        - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-private-subnet-ids'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-keycloak-subnet-group'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Secrets Manager Secret for DB Password
+  KeycloakDBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-keycloak-db-secret'
+      Description: Keycloak RDS database credentials
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DBUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-keycloak-db-secret'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # RDS PostgreSQL Instance
+  KeycloakDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-${Environment}-keycloak'
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: '17.7'  # Latest stable PostgreSQL (Jan 2025)
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: !Sub '{{resolve:secretsmanager:${KeycloakDBSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${KeycloakDBSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref KeycloakDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref KeycloakDBSecurityGroup
+      MultiAZ: !If [EnableMultiAZ, true, false]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !If [IsProduction, 7, 1]
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: !If [IsProduction, true, false]
+      EnablePerformanceInsights: !If [IsProduction, true, false]
+      CopyTagsToSnapshot: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-keycloak'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Component
+          Value: keycloak
+        - Key: NIST_Control
+          Value: IA-2_SC-28
+
+  # Attach Secret to RDS
+  KeycloakDBSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref KeycloakDBSecret
+      TargetId: !Ref KeycloakDBInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  KeycloakDBEndpoint:
+    Description: Keycloak RDS endpoint
+    Value: !GetAtt KeycloakDBInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-KeycloakDBEndpoint'
+
+  KeycloakDBPort:
+    Description: Keycloak RDS port
+    Value: !GetAtt KeycloakDBInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${AWS::StackName}-KeycloakDBPort'
+
+  KeycloakDBSecretArn:
+    Description: ARN of the Keycloak DB secret
+    Value: !Ref KeycloakDBSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-KeycloakDBSecretArn'
+
+  KeycloakDBName:
+    Description: Database name
+    Value: !Ref DBName
+    Export:
+      Name: !Sub '${AWS::StackName}-KeycloakDBName'
+
+  KeycloakDBSecurityGroupId:
+    Description: Security group ID for Keycloak DB
+    Value: !Ref KeycloakDBSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-KeycloakDBSecurityGroupId'
