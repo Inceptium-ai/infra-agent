@@ -4,7 +4,9 @@ metadata:
   name: kiali
   namespace: istio-system
 spec:
-  # Authentication - anonymous (ALB + Cognito handles auth)
+  # Authentication - anonymous (ALB + Cognito handles authentication at the edge)
+  # NIST IA-2: User authentication enforced by ALB + Cognito before traffic reaches Kiali
+  # Users must authenticate via Cognito OIDC; Kiali trusts pre-authenticated requests
   auth:
     strategy: anonymous
 

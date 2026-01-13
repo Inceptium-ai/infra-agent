@@ -145,7 +145,7 @@ kubectl port-forward svc/grafana 3000:3000 -n observability
 # Kiali (Istio traffic visualization)
 kubectl port-forward svc/kiali 20001:20001 -n istio-system
 # Access: http://localhost:20001/kiali
-# Token: kubectl create token kiali-service-account -n istio-system
+# Auth: Anonymous mode (no token required)
 
 # Headlamp (K8s admin console)
 kubectl port-forward svc/headlamp 8080:80 -n headlamp
@@ -297,7 +297,7 @@ wait
 1. Ensure SSM tunnel is running (Step 1 above)
 2. Run: `kubectl port-forward svc/kiali 20001:20001 -n istio-system`
 3. Open browser: http://localhost:20001/kiali
-4. Generate token: `kubectl create token kiali-service-account -n istio-system`
+4. No login required - Kiali uses anonymous mode (authentication handled by ALB + Cognito for internet access)
 
 ---
 
