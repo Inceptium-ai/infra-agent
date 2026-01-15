@@ -279,6 +279,136 @@ AWS::EKS::Addon:
 
 ---
 
+## NIST 800-53 Rev 5 Compliance Matrix
+
+This table shows compliance status for each NIST 800-53 control across all three architecture options.
+
+**Legend:**
+- ✅ **FULL** - Control fully satisfied
+- ⚠️ **PARTIAL** - Control partially satisfied (see notes)
+- ❌ **GAP** - Control not satisfied
+- ➖ **N/A** - Control not applicable to this component
+
+### Access Control (AC)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **AC-2** | Account Management | ✅ | ✅ | ✅ | PROD/DEV: Keycloak SSO with user lifecycle. AWS: Cognito user pools |
+| **AC-3** | Access Enforcement | ✅ | ✅ | ✅ | PROD/DEV: Keycloak RBAC + K8s RBAC. AWS: IAM + Cognito groups |
+| **AC-6** | Least Privilege | ✅ | ✅ | ✅ | All: IRSA for pod IAM (no static credentials) |
+| **AC-17** | Remote Access | ✅ | ⚠️ | ✅ | PROD: Private EKS + SSM bastion. DEV: Public endpoint OK. AWS: Private + SSM |
+
+### Audit & Accountability (AU)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **AU-2** | Audit Events | ✅ | ✅ | ✅ | PROD/DEV: Loki + Prometheus. AWS: CloudWatch Logs + Metrics |
+| **AU-3** | Content of Audit Records | ✅ | ✅ | ✅ | PROD/DEV: Structured JSON logs with trace IDs. AWS: CW Logs format |
+| **AU-6** | Audit Review | ✅ | ✅ | ⚠️ | PROD/DEV: Grafana dashboards + Kiali. AWS: CW Dashboards (no Kiali) |
+| **AU-7** | Audit Reduction | ✅ | ✅ | ✅ | PROD/DEV: LogQL/PromQL queries. AWS: CW Insights queries |
+| **AU-9** | Audit Protection | ✅ | ⚠️ | ✅ | PROD: Kafka WAL durability. DEV: No Kafka (risk accepted). AWS: CW managed |
+| **AU-11** | Audit Retention | ✅ | ⚠️ | ✅ | PROD: 90 days logs, unlimited S3. DEV: 7 days. AWS: Configurable |
+| **AU-12** | Audit Generation | ✅ | ✅ | ✅ | All: Automatic via Promtail/Fluent Bit |
+
+### Configuration Management (CM)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **CM-2** | Baseline Configuration | ✅ | ✅ | ✅ | All: IaC (CloudFormation + Helm) defines baseline |
+| **CM-3** | Configuration Change Control | ✅ | ✅ | ✅ | All: Git + CloudFormation change sets |
+| **CM-6** | Configuration Settings | ✅ | ✅ | ✅ | All: cfn-guard validates NIST settings before deploy |
+| **CM-8** | System Inventory | ✅ | ⚠️ | ⚠️ | PROD: Mandatory 4 tags enforced. DEV/AWS: Tags optional |
+
+### Contingency Planning (CP)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **CP-6** | Alternate Storage | ✅ | ❌ | ✅ | PROD: S3 cross-region replication. DEV: Skipped. AWS: S3 CRR available |
+| **CP-9** | System Backup | ✅ | ❌ | ✅ | PROD: Velero daily/weekly. DEV: Skipped. AWS: AWS Backup |
+| **CP-10** | Recovery | ✅ | ⚠️ | ✅ | PROD: Multi-AZ (3 AZs). DEV: Single AZ. AWS: Multi-AZ |
+
+### Identification & Authentication (IA)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **IA-2** | Identification | ✅ | ✅ | ✅ | PROD/DEV: Keycloak OIDC. AWS: Cognito OIDC |
+| **IA-2(1)** | MFA for Privileged | ✅ | ⚠️ | ✅ | PROD: MFA required. DEV: Optional. AWS: Cognito MFA |
+| **IA-5** | Authenticator Management | ✅ | ✅ | ✅ | PROD/DEV: Keycloak password policies. AWS: Cognito policies |
+| **IA-8** | Non-Org User ID | ✅ | ✅ | ✅ | PROD/DEV: Keycloak federation. AWS: Cognito social login |
+
+### Risk Assessment (RA)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **RA-5** | Vulnerability Scanning | ✅ | ⚠️ | ✅ | PROD: Trivy Operator continuous. DEV: CI/CD only. AWS: ECR + Inspector |
+
+### System & Communications Protection (SC)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **SC-7** | Boundary Protection | ✅ | ✅ | ✅ | All: Non-routable pod subnets (100.64.x.x), NACLs, SGs |
+| **SC-8** | Transmission Confidentiality | ✅ | ⚠️ | ⚠️ | PROD: Full Istio mTLS. DEV: Partial (resource gap). AWS: No Istio |
+| **SC-8(1)** | Cryptographic Protection | ✅ | ⚠️ | ⚠️ | PROD: mTLS all pods. DEV: mTLS user-facing only. AWS: TLS to services |
+| **SC-12** | Crypto Key Management | ✅ | ✅ | ✅ | All: AWS KMS (customer-managed in PROD) |
+| **SC-13** | Cryptographic Protection | ✅ | ✅ | ✅ | All: TLS 1.3 for ALB, AES-256 at rest |
+| **SC-28** | Encryption at Rest | ✅ | ✅ | ✅ | All: KMS encryption for EBS, S3, RDS, EKS secrets |
+
+### System & Information Integrity (SI)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **SI-2** | Flaw Remediation | ✅ | ⚠️ | ✅ | PROD: Trivy continuous scanning. DEV: CI/CD only. AWS: Inspector |
+| **SI-4** | System Monitoring | ✅ | ✅ | ⚠️ | PROD/DEV: Grafana + Kiali traffic viz. AWS: CW (no traffic viz) |
+| **SI-5** | Security Alerts | ✅ | ✅ | ✅ | All: Alerting via Grafana/CloudWatch Alarms |
+
+### Program Management (PM)
+
+| Control | Control Name | PROD | DEV | AWS Managed | Implementation Notes |
+|---------|-------------|------|-----|-------------|---------------------|
+| **PM-3** | Resource Management | ✅ | ❌ | ⚠️ | PROD: Kubecost pod-level costs. DEV: Skipped. AWS: Cost Explorer (account-level only) |
+
+---
+
+### Compliance Summary
+
+| Category | PROD | DEV | AWS Managed |
+|----------|------|-----|-------------|
+| **Access Control (AC)** | 4/4 ✅ | 3/4 ✅, 1/4 ⚠️ | 4/4 ✅ |
+| **Audit (AU)** | 7/7 ✅ | 5/7 ✅, 2/7 ⚠️ | 6/7 ✅, 1/7 ⚠️ |
+| **Config Management (CM)** | 4/4 ✅ | 3/4 ✅, 1/4 ⚠️ | 3/4 ✅, 1/4 ⚠️ |
+| **Contingtic Planning (CP)** | 3/3 ✅ | 0/3 ✅, 1/3 ⚠️, 2/3 ❌ | 3/3 ✅ |
+| **Identification (IA)** | 4/4 ✅ | 3/4 ✅, 1/4 ⚠️ | 4/4 ✅ |
+| **Risk Assessment (RA)** | 1/1 ✅ | 0/1 ✅, 1/1 ⚠️ | 1/1 ✅ |
+| **System Protection (SC)** | 6/6 ✅ | 4/6 ✅, 2/6 ⚠️ | 4/6 ✅, 2/6 ⚠️ |
+| **System Integrity (SI)** | 3/3 ✅ | 2/3 ✅, 1/3 ⚠️ | 2/3 ✅, 1/3 ⚠️ |
+| **Program Mgmt (PM)** | 1/1 ✅ | 0/1 ✅, 0/1 ⚠️, 1/1 ❌ | 0/1 ✅, 1/1 ⚠️ |
+| | | | |
+| **TOTAL** | **33/33 ✅** | **20/33 ✅, 10/33 ⚠️, 3/33 ❌** | **27/33 ✅, 6/33 ⚠️** |
+
+### Key Compliance Gaps by Environment
+
+#### DEV Environment Gaps (Accepted for Cost Savings)
+
+| Control | Gap | Risk | Compensating Control |
+|---------|-----|------|---------------------|
+| **CP-6** (Alternate Storage) | No cross-region backup | Data loss if region fails | DEV is ephemeral, can recreate |
+| **CP-9** (Backup) | No Velero backups | Data loss if cluster fails | IaC can recreate; no prod data |
+| **PM-3** (Cost Management) | No Kubecost | Can't track pod-level costs | AWS Cost Explorer for account-level |
+| **SC-8** (mTLS) | Partial Istio sidecars | Internal traffic unencrypted | VPC isolation (100.64.x.x) |
+| **AU-9** (Audit Protection) | No Kafka WAL | Metrics could be lost | Prometheus local buffer |
+| **AU-11** (Retention) | 7-day logs only | Limited forensic history | Sufficient for dev debugging |
+
+#### AWS Managed Gaps
+
+| Control | Gap | Risk | Compensating Control |
+|---------|-----|------|---------------------|
+| **AU-6** (Audit Review) | No Kiali | Cannot visualize Istio traffic | Not using Istio in AWS option |
+| **SC-8** (mTLS) | No Istio | No service mesh encryption | VPC isolation + TLS to AWS services |
+| **SI-4** (Monitoring) | No traffic visualization | Limited service debugging | X-Ray traces for request flow |
+| **PM-3** (Cost Management) | Account-level only | Cannot track pod costs | Limited Kubernetes visibility |
+
+---
+
 ## Identity & Authentication (Keycloak)
 
 | Component | PROD Config | DEV Config | AWS Alternative | PROD $/mo | DEV $/mo | AWS $/mo |
@@ -673,3 +803,4 @@ For teams wanting OSS compatibility with managed infrastructure:
 | 2.1 | 2025-01-11 | AI Agent | Added actual resource metrics section with real cluster data |
 | 2.2 | 2025-01-11 | AI Agent | Added Keycloak identity provider section with OIDC integration details |
 | 2.3 | 2026-01-14 | AI Agent | Added AWS CloudWatch Observability EKS Add-on section with pod breakdown, data flow diagram, installation commands, and comparison table |
+| 2.4 | 2026-01-14 | AI Agent | Added NIST 800-53 Rev 5 Compliance Matrix with 33 controls across PROD/DEV/AWS, compliance summary, and gap analysis |
