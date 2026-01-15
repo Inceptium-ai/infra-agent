@@ -1,6 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
   Application Load Balancer for Observability Stack with Cognito Authentication
+  Services: SigNoz (observability), Headlamp (K8s admin)
   NIST SC-8: Transmission Confidentiality (HTTPS)
   NIST IA-2: Identification and Authentication (Cognito)
 
@@ -132,17 +133,17 @@ Resources:
   # Target Groups (NodePort services)
   #############################################
 
-  # Grafana Target Group
-  GrafanaTargetGroup:
+  # SigNoz Target Group (unified observability)
+  SigNozTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub '${ProjectName}-${Environment}-grafana-tg'
+      Name: !Sub '${ProjectName}-${Environment}-signoz-tg'
       Protocol: HTTP
-      Port: 30300  # NodePort for Grafana
+      Port: 30301  # NodePort for SigNoz frontend
       VpcId: !Ref VpcId
       TargetType: instance
       HealthCheckEnabled: true
-      HealthCheckPath: /api/health
+      HealthCheckPath: /api/v1/health
       HealthCheckProtocol: HTTP
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
@@ -150,9 +151,11 @@ Resources:
       UnhealthyThresholdCount: 3
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-grafana-tg'
+          Value: !Sub '${ProjectName}-${Environment}-signoz-tg'
+        - Key: Service
+          Value: signoz
 
-  # Headlamp Target Group
+  # Headlamp Target Group (K8s admin)
   HeadlampTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -171,26 +174,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-headlamp-tg'
-
-  # Kiali Target Group
-  KialiTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Sub '${ProjectName}-${Environment}-kiali-tg'
-      Protocol: HTTP
-      Port: 30200  # NodePort for Kiali
-      VpcId: !Ref VpcId
-      TargetType: instance
-      HealthCheckEnabled: true
-      HealthCheckPath: /kiali/healthz
-      HealthCheckProtocol: HTTP
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 3
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-kiali-tg'
+        - Key: Service
+          Value: headlamp
 
   #############################################
   # HTTPS Listener with Cognito Auth
@@ -209,7 +194,7 @@ Resources:
       Certificates:
         - CertificateArn: !Ref CertificateArn
       DefaultActions:
-        # Default: Cognito auth then forward to Grafana
+        # Default: Cognito auth then forward to SigNoz
         - Type: authenticate-cognito
           Order: 1
           AuthenticateCognitoConfig:
@@ -222,7 +207,7 @@ Resources:
             SessionTimeout: 3600
         - Type: forward
           Order: 2
-          TargetGroupArn: !Ref GrafanaTargetGroup
+          TargetGroupArn: !Ref SigNozTargetGroup
 
   # HTTP to HTTPS Redirect
   HTTPListener:
@@ -242,7 +227,7 @@ Resources:
   # Listener Rules (path-based routing)
   #############################################
 
-  # /headlamp/* -> Headlamp
+  # /headlamp/* -> Headlamp (K8s admin)
   HeadlampListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
@@ -265,28 +250,8 @@ Resources:
           Order: 2
           TargetGroupArn: !Ref HeadlampTargetGroup
 
-  # /kiali/* -> Kiali
-  KialiListenerRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Properties:
-      ListenerArn: !Ref HTTPSListener
-      Priority: 20
-      Conditions:
-        - Field: path-pattern
-          Values:
-            - '/kiali*'
-      Actions:
-        - Type: authenticate-cognito
-          Order: 1
-          AuthenticateCognitoConfig:
-            UserPoolArn: !Ref CognitoUserPoolArn
-            UserPoolClientId: !Ref CognitoUserPoolClientId
-            UserPoolDomain: !Ref CognitoUserPoolDomain
-            OnUnauthenticatedRequest: authenticate
-            Scope: openid email profile
-        - Type: forward
-          Order: 2
-          TargetGroupArn: !Ref KialiTargetGroup
+  # Note: SigNoz is the default route (/) - no separate rule needed
+  # Root path requests go to SigNoz via HTTPSListener DefaultActions
 
 Outputs:
   ALBDNSName:
@@ -307,38 +272,26 @@ Outputs:
     Export:
       Name: !Sub '${ProjectName}-${Environment}-observability-alb-sg-id'
 
-  GrafanaURL:
-    Description: Grafana URL (via ALB)
+  SigNozURL:
+    Description: SigNoz URL (via ALB) - Unified Observability
     Value: !Sub 'https://${ObservabilityALB.DNSName}/'
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-grafana-url'
+      Name: !Sub '${ProjectName}-${Environment}-signoz-url'
 
   HeadlampURL:
-    Description: Headlamp URL (via ALB)
+    Description: Headlamp URL (via ALB) - K8s Admin
     Value: !Sub 'https://${ObservabilityALB.DNSName}/headlamp'
     Export:
       Name: !Sub '${ProjectName}-${Environment}-headlamp-url'
 
-  KialiURL:
-    Description: Kiali URL (via ALB)
-    Value: !Sub 'https://${ObservabilityALB.DNSName}/kiali'
+  SigNozTargetGroupArn:
+    Description: SigNoz Target Group ARN
+    Value: !Ref SigNozTargetGroup
     Export:
-      Name: !Sub '${ProjectName}-${Environment}-kiali-url'
-
-  GrafanaTargetGroupArn:
-    Description: Grafana Target Group ARN
-    Value: !Ref GrafanaTargetGroup
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-grafana-tg-arn'
+      Name: !Sub '${ProjectName}-${Environment}-signoz-tg-arn'
 
   HeadlampTargetGroupArn:
     Description: Headlamp Target Group ARN
     Value: !Ref HeadlampTargetGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-headlamp-tg-arn'
-
-  KialiTargetGroupArn:
-    Description: Kiali Target Group ARN
-    Value: !Ref KialiTargetGroup
-    Export:
-      Name: !Sub '${ProjectName}-${Environment}-kiali-tg-arn'
