@@ -1,0 +1,297 @@
+# SigNoz Helm Values - Unified Observability Platform
+# NIST AU-2: Audit Events (logs, metrics, traces)
+# NIST AU-6: Audit Review (dashboards, alerts)
+# NIST SI-4: System Monitoring (full stack observability)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+#
+# SigNoz = Signal + Noise (signal-to-noise ratio)
+# Unified platform for metrics, logs, and traces using ClickHouse
+
+# Global settings
+global:
+  storageClass: gp3
+  # Cluster name for multi-cluster identification
+  clusterName: infra-agent-dev-cluster
+
+# ============================================================================
+# Frontend (Query Service + UI)
+# ============================================================================
+frontend:
+  replicaCount: 1
+
+  # Istio sidecar injection
+  podLabels:
+    sidecar.istio.io/inject: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 3301
+
+  # Ingress disabled - use Istio Gateway or port-forward
+  ingress:
+    enabled: false
+
+# ============================================================================
+# Query Service (Backend API)
+# ============================================================================
+queryService:
+  replicaCount: 1
+
+  # Istio sidecar injection
+  podLabels:
+    sidecar.istio.io/inject: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+# ============================================================================
+# OTel Collector (Receives metrics, logs, traces)
+# ============================================================================
+otelCollector:
+  replicaCount: 1
+
+  # Istio sidecar injection
+  podLabels:
+    sidecar.istio.io/inject: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  # Ports for receiving telemetry
+  service:
+    type: ClusterIP
+    ports:
+      otlpGrpc: 4317
+      otlpHttp: 4318
+      zipkin: 9411
+      jaeger: 14268
+
+# ============================================================================
+# OTel Collector Metrics (DaemonSet for host metrics)
+# ============================================================================
+otelCollectorMetrics:
+  enabled: true
+
+  # DaemonSet - runs on every node
+  # Istio sidecar NOT injected for DaemonSets (host network)
+  podLabels:
+    sidecar.istio.io/inject: "false"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ============================================================================
+# ClickHouse (Storage Backend)
+# ============================================================================
+clickhouse:
+  # Cluster configuration
+  replicaCount: 1  # Single node for dev, 3+ for prod
+  shards: 1
+
+  # Istio sidecar injection
+  podLabels:
+    sidecar.istio.io/inject: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  # Persistence
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: gp3
+
+  # Data retention (days)
+  # Logs and traces are high-volume, keep shorter
+  # Metrics are low-volume, keep longer
+  coldStorage:
+    enabled: false  # Enable for S3 tiering in prod
+
+  # Security
+  user: default
+  # Password should be set via secret in production
+
+# ============================================================================
+# Alertmanager (Alerting)
+# ============================================================================
+alertmanager:
+  enabled: true
+  replicaCount: 1
+
+  # Istio sidecar injection
+  podLabels:
+    sidecar.istio.io/inject: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: gp3
+
+# ============================================================================
+# ZooKeeper (ClickHouse coordination - required for cluster mode)
+# ============================================================================
+zookeeper:
+  enabled: false  # Not needed for single-node ClickHouse
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================================
+# K8s Infra Metrics (scrapes kube-state-metrics, kubelet)
+# ============================================================================
+k8sInfraMetrics:
+  enabled: true
+
+  # Scrape Kubernetes metrics
+  kubeStateMetrics:
+    enabled: true
+
+  kubeletMetrics:
+    enabled: true
+
+  # Istio metrics scraping
+  serviceMonitors:
+    enabled: true
+
+# ============================================================================
+# Log Collection (via OTel Collector)
+# ============================================================================
+logCollection:
+  enabled: true
+
+  # Collect from all namespaces
+  namespaces: []
+
+  # Exclude system logs (optional)
+  excludeNamespaces:
+    - kube-system
+
+  # Parse Kubernetes metadata
+  k8sMetadata:
+    enabled: true
+
+# ============================================================================
+# Service Account
+# ============================================================================
+serviceAccount:
+  create: true
+  name: signoz
+  annotations: {}
+
+# ============================================================================
+# Pod Security
+# ============================================================================
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+securityContext:
+  readOnlyRootFilesystem: false  # ClickHouse needs write access
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ============================================================================
+# Node placement
+# ============================================================================
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# ============================================================================
+# Istio Integration Notes
+# ============================================================================
+# SigNoz integrates with Istio by:
+# 1. Receiving traces from Envoy sidecars via OTLP (4317/4318)
+# 2. Scraping Istio metrics from istiod and envoy
+# 3. All SigNoz pods run with Istio sidecars for mTLS
+#
+# To enable Istio trace export, configure meshConfig:
+#   meshConfig:
+#     enableTracing: true
+#     defaultConfig:
+#       tracing:
+#         zipkin:
+#           address: signoz-otel-collector.signoz.svc.cluster.local:9411
+#
+# Or use OTel:
+#   meshConfig:
+#     defaultConfig:
+#       tracing:
+#         openTelemetry:
+#           address: signoz-otel-collector.signoz.svc.cluster.local:4317

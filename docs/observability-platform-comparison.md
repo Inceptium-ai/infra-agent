@@ -603,19 +603,58 @@ Note: All self-hosted options assume existing Kubernetes cluster. AWS costs scal
 If currently running LGTM stack:
 
 ```
-Phase 1: Add SigNoz alongside LGTM
-         - Deploy SigNoz in parallel
-         - Configure dual-write for logs/metrics/traces
-         - Validate data parity
+Phase 1: Uninstall LGTM components
+         - Remove Grafana, Loki, Tempo, Prometheus, Mimir
+         - Remove Kiali (SigNoz traces replace traffic visualization)
+         - Keep Istio, Headlamp, Kubecost, Velero, Trivy
 
-Phase 2: Migrate dashboards and alerts
-         - Recreate critical dashboards in SigNoz
-         - Move alerting rules to SigNoz
+Phase 2: Install SigNoz
+         - Create signoz namespace with Istio injection
+         - Deploy SigNoz via Helm
+         - Configure Istio to export traces to SigNoz
 
-Phase 3: Decommission LGTM components
-         - Remove Loki, Tempo, Prometheus
-         - Keep Grafana if needed for custom dashboards
-         - Reduce pod count from ~35 to ~12
+Phase 3: Verify and cleanup
+         - Verify all telemetry flowing to SigNoz
+         - Delete old PVCs in observability namespace
+         - Update port-forward scripts
+```
+
+---
+
+## IaC Reference
+
+| File | Purpose |
+|------|---------|
+| `infra/helm/values/signoz/values.yaml` | SigNoz Helm values with Istio integration |
+| `scripts/migrate-to-signoz.sh` | Automated migration script (LGTM -> SigNoz) |
+
+### Quick Install Commands
+
+```bash
+# Add SigNoz Helm repo
+helm repo add signoz https://charts.signoz.io
+helm repo update
+
+# Create namespace with Istio injection
+kubectl create namespace signoz
+kubectl label namespace signoz istio-injection=enabled
+
+# Install SigNoz
+helm upgrade --install signoz signoz/signoz \
+    --namespace signoz \
+    --values infra/helm/values/signoz/values.yaml \
+    --wait
+
+# Access UI
+kubectl port-forward svc/signoz-frontend 3301:3301 -n signoz
+# Open: http://localhost:3301
+```
+
+### Full Migration
+
+```bash
+# Run the migration script (uninstalls LGTM, installs SigNoz)
+./scripts/migrate-to-signoz.sh
 ```
 
 ---
