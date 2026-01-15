@@ -375,9 +375,33 @@ verify_installation() {
     log_info "Note: DEV uses self-signed cert - accept browser warning"
 }
 
-# Phase 11: Cleanup old PVCs (optional)
+# Phase 11: Delete old CloudFormation stacks
+delete_lgtm_stacks() {
+    log_step "Phase 11: Deleting LGTM CloudFormation stacks..."
+
+    LGTM_STACKS=(
+        "infra-agent-dev-loki-storage"
+        "infra-agent-dev-tempo-storage"
+        "infra-agent-dev-mimir-storage"
+    )
+
+    for stack in "${LGTM_STACKS[@]}"; do
+        if aws cloudformation describe-stacks --stack-name "$stack" --region "$AWS_REGION" &> /dev/null; then
+            log_info "Deleting CloudFormation stack: $stack"
+            aws cloudformation delete-stack --stack-name "$stack" --region "$AWS_REGION"
+            log_info "Stack deletion initiated: $stack"
+        else
+            log_warn "Stack not found: $stack (skipping)"
+        fi
+    done
+
+    log_info "Note: S3 buckets have DeletionPolicy=Retain and will NOT be deleted"
+    log_info "To delete buckets manually, see cleanup info below"
+}
+
+# Phase 12: Cleanup info (PVCs, S3 buckets)
 cleanup_info() {
-    log_step "Phase 11: Cleanup information..."
+    log_step "Phase 12: Cleanup information..."
 
     echo ""
     log_warn "Old PVCs may still exist in observability namespace:"
@@ -389,6 +413,21 @@ cleanup_info() {
     echo ""
     log_info "To delete observability namespace entirely:"
     echo "  kubectl delete namespace observability"
+
+    echo ""
+    log_warn "S3 buckets were retained (DeletionPolicy=Retain):"
+    echo "  - infra-agent-dev-loki-340752837296"
+    echo "  - infra-agent-dev-tempo-340752837296"
+    echo "  - infra-agent-dev-mimir-340752837296"
+    echo ""
+    log_info "To delete S3 buckets (after confirming data is not needed):"
+    echo "  # Empty and delete each bucket:"
+    echo "  aws s3 rm s3://infra-agent-dev-loki-340752837296 --recursive"
+    echo "  aws s3 rb s3://infra-agent-dev-loki-340752837296"
+    echo "  aws s3 rm s3://infra-agent-dev-tempo-340752837296 --recursive"
+    echo "  aws s3 rb s3://infra-agent-dev-tempo-340752837296"
+    echo "  aws s3 rm s3://infra-agent-dev-mimir-340752837296 --recursive"
+    echo "  aws s3 rb s3://infra-agent-dev-mimir-340752837296"
 }
 
 # Main execution
@@ -400,12 +439,13 @@ main() {
     echo ""
     echo "This script will:"
     echo "  1. Validate CloudFormation template"
-    echo "  2. Uninstall Grafana, Loki, Tempo, Prometheus, Mimir"
-    echo "  3. Uninstall Kiali"
+    echo "  2. Uninstall Grafana, Loki, Tempo, Prometheus, Mimir (Helm)"
+    echo "  3. Uninstall Kiali (Helm)"
     echo "  4. Deploy updated ALB CloudFormation stack"
     echo "  5. Create SigNoz namespace with Istio injection"
-    echo "  6. Install SigNoz"
+    echo "  6. Install SigNoz (Helm)"
     echo "  7. Configure ALB routing to SigNoz"
+    echo "  8. Delete LGTM S3 storage CloudFormation stacks"
     echo ""
 
     check_prerequisites
@@ -435,6 +475,8 @@ main() {
     apply_k8s_resources
     echo ""
     update_istio_tracing
+    echo ""
+    delete_lgtm_stacks
     echo ""
     verify_installation
     echo ""
