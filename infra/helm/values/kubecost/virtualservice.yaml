@@ -1,0 +1,32 @@
+# Kubecost VirtualService - URL Rewriting via Istio
+# Rewrites /kubecost/* -> /* for ALB path-based routing
+# NIST SC-7: Boundary Protection (traffic routing)
+#
+# Deploy: kubectl apply -f infra/helm/values/kubecost/virtualservice.yaml
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: kubecost-rewrite
+  namespace: kubecost
+  labels:
+    app: kubecost
+spec:
+  hosts:
+    - kubecost-cost-analyzer.kubecost.svc.cluster.local
+  http:
+    - match:
+        - uri:
+            prefix: /kubecost
+      rewrite:
+        uri: /
+      route:
+        - destination:
+            host: kubecost-cost-analyzer.kubecost.svc.cluster.local
+            port:
+              number: 9090
+    - route:
+        - destination:
+            host: kubecost-cost-analyzer.kubecost.svc.cluster.local
+            port:
+              number: 9090

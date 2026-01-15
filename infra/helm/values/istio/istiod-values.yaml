@@ -1,9 +1,12 @@
 # Istiod (Istio Control Plane) Helm Values
 # NIST SC-8: mTLS for transmission confidentiality
+#
+# Updated 2026-01-14: Upgraded to 1.28.2 to fix NativeSidecars sidecar injection bug
+# Updated tracer from Tempo to SigNoz OTel Collector
 
 global:
   hub: docker.io/istio
-  tag: 1.24.0
+  tag: 1.28.2
   istioNamespace: istio-system
 
   # mTLS mode - STRICT for NIST SC-8 compliance
@@ -24,23 +27,21 @@ global:
     accessLogFile: /dev/stdout
     accessLogEncoding: JSON
 
-  # Enable tracing
-  tracer:
-    zipkin:
-      address: tempo.observability.svc.cluster.local:9411
-
 meshConfig:
   # Enable access logging for all workloads (NIST AU-2)
   accessLogFile: /dev/stdout
   accessLogEncoding: JSON
+
+  # Enable tracing via OpenTelemetry to SigNoz
+  enableTracing: true
 
   # Default mTLS mode - STRICT (NIST SC-8)
   defaultConfig:
     holdApplicationUntilProxyStarts: true
     tracing:
       sampling: 100
-      zipkin:
-        address: tempo.observability.svc.cluster.local:9411
+      openTelemetry:
+        address: signoz-otel-collector.signoz.svc.cluster.local:4317
 
   # Enable auto mTLS
   enableAutoMtls: true

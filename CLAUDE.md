@@ -60,29 +60,31 @@ Or use the services script:
 
 ### Internet Access (ALB + Cognito)
 
-| Service | URL | Auth |
-|---------|-----|------|
-| Grafana | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/ | Cognito |
-| Headlamp | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp | Cognito |
-| Kiali | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kiali | Cognito |
+| Service | URL | Auth | Notes |
+|---------|-----|------|-------|
+| SigNoz | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/ | ALB Cognito | Unified observability |
+| Headlamp | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp/ | OIDC → EKS OIDC | Per-user K8s audit |
+| Kubecost | https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kubecost/ | ALB Cognito | Cost management |
 
 **Note:** DEV uses self-signed cert - accept browser warning.
+
+### Authentication Architecture (2026-01-15)
+
+| Service | Auth Method | Per-User Audit |
+|---------|-------------|----------------|
+| SigNoz | ALB Cognito | No (shared) |
+| Headlamp | OIDC → EKS OIDC | **Yes** (K8s audit logs) |
+| Kubecost | ALB Cognito | No (shared) |
+
+**Headlamp EKS OIDC:** Users authenticate via Cognito, token used for K8s API access. User identity (`cognito:email`) appears in K8s audit logs.
 
 ### Local Access (port-forward, after SSM tunnel)
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| Grafana | http://localhost:3000 | Dashboards, logs, metrics |
-| Loki | http://localhost:3100 | Log queries (LogQL) |
-| Tempo | http://localhost:3200 | Distributed tracing |
-| Prometheus | http://localhost:9090 | Metrics queries (PromQL) |
-| Kiali | http://localhost:20001/kiali | Istio traffic visualization |
+| SigNoz | http://localhost:3301 | Metrics, logs, traces, dashboards |
 | Headlamp | http://localhost:8080 | Kubernetes admin console |
 | Kubecost | http://localhost:9091 | Cost analysis |
-
-## Grafana Credentials (DEV)
-- Username: `admin`
-- Password: `e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO`
 
 ## Chrome Bookmarks (Genesis/Infra folder)
 
@@ -147,13 +149,12 @@ All infrastructure changes MUST be tracked in IaC:
 
 | Namespace | Purpose |
 |-----------|---------|
-| `observability` | Grafana, Loki, Tempo, Prometheus, Mimir |
-| `istio-system` | Istio service mesh, Kiali |
+| `signoz` | SigNoz unified observability (metrics, logs, traces) |
+| `istio-system` | Istio service mesh |
 | `headlamp` | Kubernetes admin console |
 | `kubecost` | Cost analysis |
 | `velero` | Backup/restore |
 | `trivy-system` | Security scanning |
-| `gitlab` | GitLab (if deployed) |
 
 ## Lessons Learned
 
@@ -179,6 +180,59 @@ All infrastructure changes MUST be tracked in IaC:
 ### SSM Tunnel Timeout
 - Default idle timeout: 20 minutes
 - Max session duration: 60 minutes (configurable to 24 hours in SSM preferences)
+
+### SigNoz Migration (2026-01-14/15)
+**Change:** Replaced LGTM stack (Grafana, Loki, Tempo, Mimir, Prometheus) with SigNoz for unified observability.
+
+**Benefits:**
+- Single UI for metrics, logs, and traces
+- Reduced complexity (1 tool vs 5)
+- Lower resource footprint
+- Native OpenTelemetry support
+
+**Removed:**
+- Grafana, Loki, Tempo, Mimir, Prometheus
+- Kiali (SigNoz can show service maps via traces)
+
+### EKS OIDC with Cognito (2026-01-15)
+**Purpose:** Enable per-user Kubernetes API authentication for Headlamp.
+
+**Architecture:**
+1. User accesses Headlamp → redirected to Cognito
+2. After login, Headlamp gets OIDC token
+3. Token used for K8s API via EKS OIDC identity provider
+4. K8s audit logs show `cognito:user@email.com`
+
+**IaC Files:**
+- `infra/cloudformation/stacks/02-eks/eks-oidc-cognito.yaml` - EKS OIDC provider
+- `infra/cloudformation/stacks/01-networking/cognito-auth.yaml` - Cognito groups
+- `infra/helm/values/rbac-cognito.yaml` - K8s RBAC for Cognito users
+
+**Cognito Groups → K8s Roles:**
+| Cognito Group | K8s ClusterRole |
+|---------------|-----------------|
+| platform-admins | cluster-admin |
+| developers | view |
+
+### ALB Path-Based Routing (2026-01-15)
+**Pattern:** Single ALB routes to multiple services via path patterns.
+
+| Path | Service | NodePort |
+|------|---------|----------|
+| `/` (default) | SigNoz | 30301 |
+| `/headlamp/*` | Headlamp | 30446 |
+| `/kubecost/*` | Kubecost nginx | 30091 |
+
+**Trailing Slash:** Apps like Headlamp require trailing slash. ALB rules redirect `/headlamp` → `/headlamp/`.
+
+**Kubecost nginx Proxy:** Kubecost doesn't support subpath routing natively. nginx proxy rewrites `/kubecost/*` → `/*`.
+
+### Kubecost OIDC Limitation (2026-01-15)
+**Issue:** Kubecost OIDC requires specific environment variable format, not just secret reference.
+
+**Workaround:** Use ALB Cognito auth (no per-user audit in Kubecost).
+
+**TODO:** Configure Kubecost OIDC with correct environment variable mappings for per-user audit.
 
 ## NEVER do these
 

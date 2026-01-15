@@ -258,13 +258,19 @@ update_target_group_binding() {
 create_signoz_namespace() {
     log_step "Phase 6: Creating SigNoz namespace..."
 
-    # Create namespace if not exists
-    kubectl create namespace signoz --dry-run=client -o yaml | kubectl apply -f -
+    # Apply namespace from IaC file (includes Istio injection label)
+    # Note: Istio injection is currently DISABLED due to Istio 1.24 NativeSidecars bug
+    NAMESPACE_FILE="$PROJECT_ROOT/infra/helm/values/signoz/namespace.yaml"
+    if [ -f "$NAMESPACE_FILE" ]; then
+        kubectl apply -f "$NAMESPACE_FILE"
+        log_info "SigNoz namespace created from IaC file"
+    else
+        log_warn "Namespace IaC file not found, creating manually"
+        kubectl create namespace signoz --dry-run=client -o yaml | kubectl apply -f -
+        kubectl label namespace signoz istio-injection=disabled --overwrite
+    fi
 
-    # Label for Istio injection
-    kubectl label namespace signoz istio-injection=enabled --overwrite
-
-    log_info "SigNoz namespace created with Istio injection enabled"
+    log_info "SigNoz namespace created (Istio injection disabled - see namespace.yaml)"
 }
 
 # Phase 7: Add SigNoz Helm repo and install

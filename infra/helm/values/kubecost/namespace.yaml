@@ -1,0 +1,14 @@
+# Kubecost Namespace
+# NIST CM-3: Configuration Change Control (IaC managed)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+#
+# Deploy: kubectl apply -f infra/helm/values/kubecost/namespace.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubecost
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/name: kubecost
+    app.kubernetes.io/part-of: operations

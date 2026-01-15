@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
   Application Load Balancer for Observability Stack with Cognito Authentication
-  Services: SigNoz (observability), Headlamp (K8s admin)
+  Services: SigNoz (observability), Headlamp (K8s admin), Kubecost (cost analysis)
   NIST SC-8: Transmission Confidentiality (HTTPS)
   NIST IA-2: Identification and Authentication (Cognito)
 
@@ -165,7 +165,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: instance
       HealthCheckEnabled: true
-      HealthCheckPath: /
+      HealthCheckPath: /headlamp/
       HealthCheckProtocol: HTTP
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
@@ -176,6 +176,28 @@ Resources:
           Value: !Sub '${ProjectName}-${Environment}-headlamp-tg'
         - Key: Service
           Value: headlamp
+
+  # Kubecost Target Group (cost analysis via nginx proxy)
+  KubecostTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-kubecost-tg'
+      Protocol: HTTP
+      Port: 30091  # NodePort for Kubecost nginx proxy
+      VpcId: !Ref VpcId
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckPath: /healthz
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-kubecost-tg'
+        - Key: Service
+          Value: kubecost
 
   #############################################
   # HTTPS Listener with Cognito Auth
@@ -227,7 +249,28 @@ Resources:
   # Listener Rules (path-based routing)
   #############################################
 
+  # Redirect /headlamp to /headlamp/ (trailing slash required)
+  HeadlampRedirectRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 5
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/headlamp'
+      Actions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            Host: '#{host}'
+            Path: '/headlamp/'
+            Query: '#{query}'
+            StatusCode: HTTP_301
+
   # /headlamp/* -> Headlamp (K8s admin)
+  # Headlamp handles its own OIDC auth with Cognito via EKS OIDC - no ALB auth needed
   HeadlampListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
@@ -237,6 +280,41 @@ Resources:
         - Field: path-pattern
           Values:
             - '/headlamp*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref HeadlampTargetGroup
+
+  # Redirect /kubecost to /kubecost/ (trailing slash required)
+  KubecostRedirectRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 15
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/kubecost'
+      Actions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            Host: '#{host}'
+            Path: '/kubecost/'
+            Query: '#{query}'
+            StatusCode: HTTP_301
+
+  # /kubecost/* -> Kubecost (cost analysis via nginx proxy)
+  # ALB Cognito auth protects the endpoint
+  KubecostListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HTTPSListener
+      Priority: 20
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/kubecost*'
       Actions:
         - Type: authenticate-cognito
           Order: 1
@@ -248,7 +326,7 @@ Resources:
             Scope: openid email profile
         - Type: forward
           Order: 2
-          TargetGroupArn: !Ref HeadlampTargetGroup
+          TargetGroupArn: !Ref KubecostTargetGroup
 
   # Note: SigNoz is the default route (/) - no separate rule needed
   # Root path requests go to SigNoz via HTTPSListener DefaultActions
@@ -295,3 +373,16 @@ Outputs:
     Value: !Ref HeadlampTargetGroup
     Export:
       Name: !Sub '${ProjectName}-${Environment}-headlamp-tg-arn'
+
+  KubecostURL:
+    Description: Kubecost URL (via ALB) - Cost Analysis
+    Value: !Sub 'https://${ObservabilityALB.DNSName}/kubecost'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-kubecost-url'
+
+  KubecostTargetGroupArn:
+    Description: Kubecost Target Group ARN
+    Value: !Ref KubecostTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-kubecost-tg-arn'
+

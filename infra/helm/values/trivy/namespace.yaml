@@ -1,0 +1,15 @@
+# Trivy Namespace
+# NIST CM-3: Configuration Change Control (IaC managed)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+# NIST RA-5: Vulnerability Scanning
+#
+# Deploy: kubectl apply -f infra/helm/values/trivy/namespace.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trivy-system
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/name: trivy
+    app.kubernetes.io/part-of: security

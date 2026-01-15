@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EKS OIDC Identity Provider Configuration for AWS Cognito
+  Enables per-user authentication to Kubernetes API via Cognito
+  NIST IA-2: Identification and Authentication (Organizational Users)
+  NIST AU-2: Audit Events (per-user K8s API audit trail)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-agent
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - tst
+      - prd
+    Description: Environment name
+
+  ClusterName:
+    Type: String
+    Description: EKS cluster name
+
+  CognitoUserPoolId:
+    Type: String
+    Description: Cognito User Pool ID (e.g., us-east-1_xxxxx)
+
+  CognitoClientId:
+    Type: String
+    Description: Cognito User Pool Client ID
+
+Resources:
+  #############################################
+  # EKS OIDC Identity Provider Config
+  #############################################
+  CognitoOIDCProvider:
+    Type: AWS::EKS::IdentityProviderConfig
+    Properties:
+      ClusterName: !Ref ClusterName
+      Type: oidc
+      IdentityProviderConfigName: cognito
+      Oidc:
+        ClientId: !Ref CognitoClientId
+        IssuerUrl: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+        UsernameClaim: email
+        UsernamePrefix: 'cognito:'
+        GroupsClaim: 'cognito:groups'
+        GroupsPrefix: 'cognito:'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-cognito-oidc'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: NIST_Control
+          Value: IA-2_AU-2
+
+Outputs:
+  IdentityProviderConfigName:
+    Description: Name of the OIDC identity provider config
+    Value: cognito
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-oidc-config-name'
+
+  IdentityProviderIssuerUrl:
+    Description: Cognito issuer URL
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPoolId}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-eks-oidc-issuer-url'

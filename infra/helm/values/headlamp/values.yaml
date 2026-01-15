@@ -32,7 +32,22 @@ ingress:
 
 # Configuration
 config:
+  # In-cluster mode with OIDC authentication
+  inCluster: true
   pluginsDir: /headlamp/plugins
+  # Base URL for ALB path-based routing
+  baseURL: /headlamp
+  # OIDC configuration with AWS Cognito
+  # Users authenticate via Cognito, token used for K8s API via EKS OIDC
+  # NIST IA-2: Per-user identification and authentication
+  oidc:
+    clientID: "2149h8v5bqau93lq4pcq087fm6"
+    clientSecret: "d78kcdq3t870g0kg9l4uh9atq1d0r9953453nksf862e8t54mi2"
+    issuerURL: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_49eiiC4Ew"
+    scopes: "openid email profile"
+  # Extra arguments for OIDC
+  extraArgs:
+    - -oidc-skip-tls-verify
 
 # RBAC - use existing cluster admin for dev
 clusterRoleBinding:

@@ -1,0 +1,31 @@
+# SigNoz k8s-infra Helm Values
+# Collects Kubernetes metrics, logs, and forwards to SigNoz OTel Collector
+# NIST AU-2: Audit Events (logs)
+# NIST SI-4: System Monitoring (metrics)
+#
+# Install: helm install k8s-infra signoz/k8s-infra -n signoz -f infra/helm/values/signoz/k8s-infra-values.yaml
+
+# OTel Collector endpoint (SigNoz)
+otelCollectorEndpoint: signoz-otel-collector.signoz.svc.cluster.local:4317
+otelInsecure: true
+
+# Agent (DaemonSet) - runs on every node
+otelAgent:
+  enabled: true
+  # Istio sidecar NOT injected for DaemonSets
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
+# Deployment collector (cluster-wide metrics)
+otelDeployment:
+  enabled: true
+  # Istio sidecar injection
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+
+# Log collection
+logsCollection:
+  enabled: true
+
+# Cluster name for multi-cluster identification
+clusterName: infra-agent-dev-cluster

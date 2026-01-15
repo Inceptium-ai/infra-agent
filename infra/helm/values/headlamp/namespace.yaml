@@ -1,0 +1,17 @@
+# Headlamp Namespace
+# NIST CM-3: Configuration Change Control (IaC managed)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+#
+# Istio sidecar injection ENABLED after Istio 1.28.2 upgrade (2026-01-14)
+#
+# Deploy: kubectl apply -f infra/helm/values/headlamp/namespace.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: headlamp
+  labels:
+    # Istio injection enabled for mTLS (NIST SC-8)
+    istio-injection: enabled
+    app.kubernetes.io/name: headlamp
+    app.kubernetes.io/part-of: operations

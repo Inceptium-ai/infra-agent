@@ -117,6 +117,15 @@ kubecostProductConfigs:
     RAM: 0.004237
     GPU: 0.95
 
+# OIDC Authentication with AWS Cognito
+# NIST IA-2: Identification and Authentication
+# NOTE: Kubecost OIDC disabled for now - requires specific config format
+# ALB Cognito auth still protects the endpoint
+# TODO: Configure Kubecost OIDC with correct environment variable mappings
+oidc:
+  enabled: false
+  # secretName: kubecost-oidc
+
 # Service configuration
 service:
   type: ClusterIP
@@ -170,3 +179,193 @@ tolerations: []
 
 # Node selector
 nodeSelector: {}
+
+# Istio sidecar injection
+podLabels:
+  sidecar.istio.io/inject: "true"
+
+podAnnotations:
+  sidecar.istio.io/inject: "true"
+  proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+
+# Extra objects - nginx proxy for ALB path-based routing + OIDC secret
+# This creates an nginx deployment that rewrites /kubecost/* -> /*
+extraObjects:
+  # OIDC Secret for Cognito authentication
+  # NIST IA-2: Identification and Authentication
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: kubecost-oidc
+      namespace: kubecost
+      labels:
+        app: kubecost
+        app.kubernetes.io/managed-by: helm
+    type: Opaque
+    stringData:
+      clientID: "2149h8v5bqau93lq4pcq087fm6"
+      clientSecret: "d78kcdq3t870g0kg9l4uh9atq1d0r9953453nksf862e8t54mi2"
+      authURL: "https://infra-agent-dev-340752837296.auth.us-east-1.amazoncognito.com/oauth2/authorize"
+      loginRedirectURL: "https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kubecost/model/oidc/callback"
+      discoveryURL: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_49eiiC4Ew/.well-known/openid-configuration"
+
+  # Nginx configuration
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: kubecost-nginx-config
+      namespace: kubecost
+      labels:
+        app: kubecost-nginx
+    data:
+      nginx.conf: |
+        worker_processes auto;
+        error_log /tmp/error.log warn;
+        pid /tmp/nginx.pid;
+
+        events {
+            worker_connections 1024;
+        }
+
+        http {
+            include /etc/nginx/mime.types;
+            default_type application/octet-stream;
+
+            # Use /tmp for all cache/temp directories (writable by non-root)
+            client_body_temp_path /tmp/client_body;
+            proxy_temp_path /tmp/proxy;
+            fastcgi_temp_path /tmp/fastcgi;
+            uwsgi_temp_path /tmp/uwsgi;
+            scgi_temp_path /tmp/scgi;
+
+            log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                            '$status $body_bytes_sent "$http_referer" '
+                            '"$http_user_agent" "$http_x_forwarded_for"';
+
+            access_log /tmp/access.log main;
+            sendfile on;
+            keepalive_timeout 65;
+
+            server {
+                listen 8080;
+                server_name _;
+
+                # Health check endpoint
+                location /healthz {
+                    return 200 'OK';
+                    add_header Content-Type text/plain;
+                }
+
+                # Rewrite /kubecost/* to /* and proxy to Kubecost
+                location /kubecost/ {
+                    rewrite ^/kubecost/(.*) /$1 break;
+                    proxy_pass http://kubecost-cost-analyzer:9090;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+
+                # Handle /kubecost without trailing slash
+                location = /kubecost {
+                    return 301 /kubecost/;
+                }
+            }
+        }
+
+  # Nginx deployment
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: kubecost-nginx
+      namespace: kubecost
+      labels:
+        app: kubecost-nginx
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: kubecost-nginx
+      template:
+        metadata:
+          labels:
+            app: kubecost-nginx
+            sidecar.istio.io/inject: "true"
+        spec:
+          containers:
+            - name: nginx
+              image: nginx:1.25-alpine
+              ports:
+                - containerPort: 8080
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              volumeMounts:
+                - name: nginx-config
+                  mountPath: /etc/nginx/nginx.conf
+                  subPath: nginx.conf
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 101
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              livenessProbe:
+                httpGet:
+                  path: /healthz
+                  port: 8080
+                initialDelaySeconds: 5
+                periodSeconds: 10
+              readinessProbe:
+                httpGet:
+                  path: /healthz
+                  port: 8080
+                initialDelaySeconds: 5
+                periodSeconds: 5
+          volumes:
+            - name: nginx-config
+              configMap:
+                name: kubecost-nginx-config
+
+  # ClusterIP service for internal access
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: kubecost-nginx
+      namespace: kubecost
+      labels:
+        app: kubecost-nginx
+    spec:
+      type: ClusterIP
+      selector:
+        app: kubecost-nginx
+      ports:
+        - name: http
+          port: 80
+          targetPort: 8080
+          protocol: TCP
+
+  # NodePort service for ALB target group
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: kubecost-alb
+      namespace: kubecost
+      labels:
+        app: kubecost-nginx
+        access: alb
+    spec:
+      type: NodePort
+      selector:
+        app: kubecost-nginx
+      ports:
+        - name: http
+          port: 80
+          targetPort: 8080
+          nodePort: 30091
+          protocol: TCP

@@ -1,0 +1,15 @@
+# Velero Namespace
+# NIST CM-3: Configuration Change Control (IaC managed)
+# NIST SC-8: Transmission Confidentiality (Istio mTLS)
+# NIST CP-9: System Backup
+#
+# Deploy: kubectl apply -f infra/helm/values/velero/namespace.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/part-of: operations

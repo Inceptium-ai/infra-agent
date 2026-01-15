@@ -20,11 +20,11 @@ metadata:
 spec:
   serviceRef:
     name: signoz-alb
-    port: 3301
+    port: 8080
   # UPDATE THIS ARN after CloudFormation deployment
   # Get from: aws cloudformation describe-stacks --stack-name infra-agent-dev-alb-observability \
   #           --query 'Stacks[0].Outputs[?OutputKey==`SigNozTargetGroupArn`].OutputValue' --output text
-  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-signoz-tg/PLACEHOLDER
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-signoz-tg/7d0000cfeb2bbc45
   targetType: instance
 ---
 apiVersion: elbv2.k8s.aws/v1beta1
@@ -39,4 +39,21 @@ spec:
     name: headlamp-alb
     port: 80
   targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-headlamp-tg/bd45f0f77dfae8e7
+  targetType: instance
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kubecost-tgb
+  namespace: kubecost
+  labels:
+    app: kubecost
+spec:
+  serviceRef:
+    name: kubecost-alb
+    port: 80
+  # UPDATE THIS ARN after CloudFormation deployment
+  # Get from: aws cloudformation describe-stacks --stack-name infra-agent-dev-alb-observability \
+  #           --query 'Stacks[0].Outputs[?OutputKey==`KubecostTargetGroupArn`].OutputValue' --output text
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-kubecost-tg/fc31724bf1e79506
   targetType: instance

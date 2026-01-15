@@ -1,0 +1,66 @@
+# RBAC Configuration for Cognito OIDC Users
+# Maps Cognito users/groups to Kubernetes RBAC roles
+# NIST AC-2: Account Management
+# NIST AC-6: Least Privilege
+#
+# Deploy: kubectl apply -f infra/helm/values/rbac-cognito.yaml
+#
+# Prerequisites:
+# - EKS OIDC identity provider configured (eks-oidc-cognito.yaml)
+# - Cognito users have 'cognito:groups' claim in their tokens
+---
+# ClusterRoleBinding for platform admins (cluster-admin access)
+# Cognito users in 'platform-admins' group get full cluster access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cognito-platform-admins
+  labels:
+    app.kubernetes.io/managed-by: iac
+    nist-control: AC-2_AC-6
+subjects:
+  # Group-based binding (Cognito group)
+  - kind: Group
+    name: "cognito:platform-admins"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRoleBinding for developers (view access)
+# Cognito users in 'developers' group get read-only access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cognito-developers
+  labels:
+    app.kubernetes.io/managed-by: iac
+    nist-control: AC-2_AC-6
+subjects:
+  - kind: Group
+    name: "cognito:developers"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRoleBinding for specific admin user (fallback)
+# Direct user binding for initial admin access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cognito-admin-user
+  labels:
+    app.kubernetes.io/managed-by: iac
+    nist-control: AC-2_AC-6
+subjects:
+  # User-based binding (Cognito email)
+  - kind: User
+    name: "cognito:ymuwakki@gmail.com"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io

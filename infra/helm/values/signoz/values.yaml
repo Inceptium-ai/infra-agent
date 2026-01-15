@@ -19,13 +19,13 @@ global:
 frontend:
   replicaCount: 1
 
-  # Istio sidecar injection
+  # Istio sidecar injection - ENABLED for mTLS (NIST SC-8)
+  # Re-enable after Istio upgrade or fix: https://github.com/istio/istio/issues/53503
   podLabels:
     sidecar.istio.io/inject: "true"
 
   podAnnotations:
     sidecar.istio.io/inject: "true"
-    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
   resources:
     requests:
@@ -49,13 +49,12 @@ frontend:
 queryService:
   replicaCount: 1
 
-  # Istio sidecar injection
+  # Istio sidecar injection - ENABLED for mTLS (NIST SC-8)
   podLabels:
     sidecar.istio.io/inject: "true"
 
   podAnnotations:
     sidecar.istio.io/inject: "true"
-    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
   resources:
     requests:
@@ -75,13 +74,12 @@ queryService:
 otelCollector:
   replicaCount: 1
 
-  # Istio sidecar injection
+  # Istio sidecar injection - ENABLED for mTLS (NIST SC-8)
   podLabels:
     sidecar.istio.io/inject: "true"
 
   podAnnotations:
     sidecar.istio.io/inject: "true"
-    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
   resources:
     requests:
@@ -109,10 +107,10 @@ otelCollectorMetrics:
   # DaemonSet - runs on every node
   # Istio sidecar NOT injected for DaemonSets (host network)
   podLabels:
-    sidecar.istio.io/inject: "false"
+    sidecar.istio.io/inject: "true"
 
   podAnnotations:
-    sidecar.istio.io/inject: "false"
+    sidecar.istio.io/inject: "true"
 
   resources:
     requests:
@@ -130,13 +128,12 @@ clickhouse:
   replicaCount: 1  # Single node for dev, 3+ for prod
   shards: 1
 
-  # Istio sidecar injection
+  # Istio sidecar injection - ENABLED for mTLS (NIST SC-8)
   podLabels:
     sidecar.istio.io/inject: "true"
 
   podAnnotations:
     sidecar.istio.io/inject: "true"
-    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
   resources:
     requests:
@@ -169,13 +166,12 @@ alertmanager:
   enabled: true
   replicaCount: 1
 
-  # Istio sidecar injection
+  # Istio sidecar injection - ENABLED for mTLS (NIST SC-8)
   podLabels:
     sidecar.istio.io/inject: "true"
 
   podAnnotations:
     sidecar.istio.io/inject: "true"
-    proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
 
   resources:
     requests:

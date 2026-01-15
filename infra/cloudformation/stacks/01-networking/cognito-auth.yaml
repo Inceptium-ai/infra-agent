@@ -132,19 +132,22 @@ Resources:
         - email
         - profile
 
-      # Callback URLs for OAuth2 (ALB endpoint)
-      CallbackURLs:
-        - !If
-          - HasALBDNS
-          - !Sub 'https://${ALBDNSName}/oauth2/idpresponse'
-          - 'https://localhost/oauth2/idpresponse'
+      # Callback URLs for OAuth2 (ALB endpoint + app-specific callbacks)
+      # Includes: ALB idpresponse, Headlamp OIDC, Kubecost OIDC
+      CallbackURLs: !If
+        - HasALBDNS
+        - - !Sub 'https://${ALBDNSName}/oauth2/idpresponse'
+          - !Sub 'https://${ALBDNSName}/headlamp/oidc-callback'
+          - !Sub 'https://${ALBDNSName}/kubecost/model/oidc/callback'
+        - - 'https://localhost/oauth2/idpresponse'
 
       # Logout URLs
-      LogoutURLs:
-        - !If
-          - HasALBDNS
-          - !Sub 'https://${ALBDNSName}/logout'
-          - 'https://localhost/logout'
+      LogoutURLs: !If
+        - HasALBDNS
+        - - !Sub 'https://${ALBDNSName}/logout'
+          - !Sub 'https://${ALBDNSName}/headlamp/'
+          - !Sub 'https://${ALBDNSName}/kubecost/'
+        - - 'https://localhost/logout'
 
       SupportedIdentityProviders:
         - COGNITO
@@ -172,15 +175,37 @@ Resources:
         - name
 
   #############################################
-  # Admin User Group
+  # Platform Admins Group (K8s cluster-admin via EKS OIDC)
+  #############################################
+  PlatformAdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: platform-admins
+      Description: Platform administrators with K8s cluster-admin access via EKS OIDC
+      UserPoolId: !Ref UserPool
+      Precedence: 1
+
+  #############################################
+  # Developers Group (K8s view access via EKS OIDC)
+  #############################################
+  DevelopersGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: developers
+      Description: Developers with K8s read-only access via EKS OIDC
+      UserPoolId: !Ref UserPool
+      Precedence: 5
+
+  #############################################
+  # Admin User Group (legacy - for UI access)
   #############################################
   AdminGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
       GroupName: admins
-      Description: Administrators with full access
+      Description: Administrators with full UI access
       UserPoolId: !Ref UserPool
-      Precedence: 1
+      Precedence: 10
 
   #############################################
   # Operator User Group
@@ -191,7 +216,7 @@ Resources:
       GroupName: operators
       Description: Operators with view and limited action access
       UserPoolId: !Ref UserPool
-      Precedence: 10
+      Precedence: 20
 
   #############################################
   # Viewer User Group

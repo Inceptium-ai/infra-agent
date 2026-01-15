@@ -9,8 +9,8 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 - NIST 800-53 R5 compliance validation and enforcement
 - Zero Trust network architecture with non-routable pod subnets
 - mTLS encryption via Istio service mesh
-- Centralized SSO authentication via Keycloak (OIDC)
-- Comprehensive observability stack (Loki, Grafana, Tempo, Mimir, Prometheus, Kiali)
+- Centralized SSO authentication via AWS Cognito (OIDC)
+- Unified observability via SigNoz (metrics, logs, traces in single platform)
 - AI-driven drift detection and remediation
 - Blue/Green deployment with automated rollback
 - IaC validation via cfn-lint and cfn-guard (NIST policy-as-code)
@@ -189,20 +189,16 @@ cfn-guard validate \
 ### Open Source Components
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| Istio | 1.28 | Service mesh, mTLS |
-| Loki | 3.6 | Log aggregation |
-| Grafana | 12.3 | Visualization |
-| Prometheus | 3.8 | Metrics scraping |
-| Mimir | 3.0 | Metrics long-term storage (S3-backed) |
-| Kafka (Mimir) | 3.9 | Write-ahead log for Mimir ingest durability |
-| Tempo | 2.6 | Distributed tracing (S3-backed) |
-| Kiali | 2.20 | Service mesh traffic visualization |
-| Keycloak | 26.0 | Centralized SSO/OIDC identity provider |
+| Istio | 1.28.2 | Service mesh, mTLS |
+| **SigNoz** | Latest | Unified observability (metrics, logs, traces) - replaces LGTM stack |
 | Trivy Operator | 0.29 | In-cluster vulnerability scanning |
 | Velero | 1.17 | Backup/restore |
-| Kubecost | 2.8 | Cost management |
-| Headlamp | 0.39 | Admin console |
+| Kubecost | 2.8 | Cost management (with nginx proxy for ALB routing) |
+| Headlamp | 0.39 | Admin console (with Cognito OIDC) |
 | LangGraph | Latest | Agent orchestration |
+
+**Note:** SigNoz replaced the LGTM stack (Loki, Grafana, Tempo, Mimir, Prometheus) as of 2026-01-14.
+This simplifies the observability architecture from 5+ components to 1 unified platform.
 
 ### Python Dependencies
 | Package | Purpose |
@@ -608,40 +604,44 @@ mimir:
 
 ---
 
-#### 9. Keycloak (Identity & Access Management)
+#### 9. AWS Cognito (Identity & Access Management)
 
 | Property | Value |
 |----------|-------|
-| **Image** | `quay.io/keycloak/keycloak:26.0` |
-| **Namespace** | `identity` |
+| **Service** | AWS Cognito User Pool |
+| **Region** | us-east-1 |
 | **Purpose** | Centralized SSO/OIDC identity provider for all UI components |
 | **NIST Controls** | IA-2 (Identification), IA-5 (Authenticator Mgmt), AC-2 (Account Mgmt) |
 
-**Components:**
-| Component | Replicas | CPU Request | Memory Request | Ports |
-|-----------|----------|-------------|----------------|-------|
-| keycloak | 1-2 | 500m | 1Gi | 8080 (HTTP), 8443 (HTTPS) |
+**Architecture:**
+AWS Cognito replaced self-hosted Keycloak (as of 2026-01-14) for simplified operations and native AWS integration.
 
-**Database:**
-| Environment | Backend | Notes |
-|-------------|---------|-------|
-| DEV | RDS PostgreSQL 17.7 | Single-AZ, db.t4g.micro |
-| TST/PRD | RDS PostgreSQL 17.7 | Multi-AZ, db.r6g.large |
+| Feature | Cognito Advantage |
+|---------|-------------------|
+| Management | Fully managed, no patching |
+| Availability | AWS SLA, multi-AZ by default |
+| Integration | Native ALB auth support |
+| Cost | Pay-per-MAU, no RDS needed |
 
-**OIDC Integration:**
-Keycloak provides centralized SSO for all UI components:
-| Client | Redirect URI | Protocol |
-|--------|--------------|----------|
-| Grafana | `https://grafana.{domain}/login/generic_oauth` | OIDC |
-| Headlamp | `https://headlamp.{domain}/oidc-callback` | OIDC |
-| Kiali | `https://kiali.{domain}/api/auth/callback` | OIDC |
-| Kubecost | `https://kubecost.{domain}/model/oidc/callback` | OIDC |
+**Authentication Methods:**
+| Method | Use Case | Configuration |
+|--------|----------|---------------|
+| ALB Cognito Action | SigNoz, Kubecost | ALB authenticates before forwarding |
+| Direct OIDC | Headlamp | App handles OIDC flow directly |
 
-**Health Checks:**
-- Readiness: `GET /health/ready` on port 8080
-- Liveness: `GET /health/live` on port 8080
+**OIDC Configuration:**
+| Service | Auth Method | Notes |
+|---------|-------------|-------|
+| SigNoz | ALB Cognito | Default route, Cognito auth on ALB |
+| Headlamp | Direct OIDC | Handles own OIDC with Cognito issuer |
+| Kubecost | ALB Cognito | Path `/kubecost/*` with Cognito auth |
 
-**Dependencies:** RDS PostgreSQL (CloudFormation), Secrets Manager for credentials
+**Cognito Endpoints:**
+- Issuer URL: `https://cognito-idp.us-east-1.amazonaws.com/{user-pool-id}`
+- Token endpoint: `https://{domain}.auth.us-east-1.amazoncognito.com/oauth2/token`
+- Authorization: `https://{domain}.auth.us-east-1.amazoncognito.com/oauth2/authorize`
+
+**Dependencies:** Cognito User Pool (CloudFormation), ALB for Cognito integration
 
 ---
 
@@ -856,39 +856,79 @@ This section provides detailed data flow diagrams for each add-on category.
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9. Authentication Flow (Keycloak)
+### 9. Authentication Flow (AWS Cognito + ALB)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           KEYCLOAK SSO AUTHENTICATION                            │
+│                        AWS COGNITO + ALB AUTHENTICATION                          │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
 │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ Operator │    │ Grafana/ │    │ Keycloak │    │   RDS    │    │ Operator │  │
-│  │ Browser  │───►│ Headlamp │───►│  (OIDC)  │───►│PostgreSQL│───►│  Logged  │  │
-│  │          │    │ /Kiali   │    │          │    │          │    │   In     │  │
+│  │ Operator │    │   ALB    │    │ Cognito  │    │   ALB    │    │ Backend  │  │
+│  │ Browser  │───►│ (HTTPS)  │───►│  Login   │───►│ (verify) │───►│ Service  │  │
+│  │          │    │          │    │          │    │          │    │          │  │
 │  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
 │       │               │               │               │               │         │
 │       │               │               │               │               │         │
-│  1. Access        2. Redirect     3. Login        4. Validate     5. Return   │
-│     Grafana         to Keycloak     Page            User            JWT/Token │
+│  1. Access        2. No cookie?   3. Login        4. Set cookie   5. Forward │
+│     /headlamp       Redirect        via Cognito     on browser      to app    │
+│                     to Cognito      hosted UI       (JWT)                      │
 │                                                                                  │
-│  OIDC Flow:                                                                     │
+│  ALB Auth Flow:                                                                 │
 │  ┌────────────────────────────────────────────────────────────────────────┐    │
-│  │  Browser → App → Keycloak (/auth) → Login → Keycloak → App (callback)  │    │
-│  │                                                  │                       │    │
-│  │                                            JWT Token                     │    │
-│  │                                            (id_token,                    │    │
-│  │                                             access_token)               │    │
+│  │  Browser → ALB → Cognito Hosted UI → Cognito → ALB (set cookie) → App  │    │
+│  │                                                                          │    │
+│  │  Session Cookie: AWSELBAuthSessionCookie (encrypted JWT)                 │    │
+│  │  Timeout: 3600 seconds (1 hour)                                          │    │
 │  └────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                  │
-│  Integrated Services:                                                            │
-│  • Grafana (observability dashboards)                                           │
-│  • Headlamp (Kubernetes admin console)                                          │
-│  • Kiali (service mesh visualization)                                           │
-│  • Kubecost (cost management)                                                   │
+│  Services with ALB Cognito Auth:                                                │
+│  • SigNoz (default route /) - unified observability                            │
+│  • Headlamp (/headlamp/*) - K8s admin console                                  │
+│  • Kubecost (/kubecost/*) - cost management                                    │
 │                                                                                  │
 │  NIST: IA-2 (Identification), IA-5 (Authenticator Mgmt), AC-2 (Account Mgmt)   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9b. ALB Path-Based Routing Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         ALB PATH-BASED ROUTING                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Internet → ALB (HTTPS:443) → Cognito Auth → Target Group → EKS NodePort        │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        HTTPS Listener (:443)                             │    │
+│  │                                                                          │    │
+│  │  Path Pattern         Priority   Auth          Target Group (NodePort)   │    │
+│  │  ─────────────────────────────────────────────────────────────────────   │    │
+│  │  /headlamp             5        redirect→     /headlamp/                 │    │
+│  │  /headlamp/*          10        Cognito →     headlamp-tg (30446)        │    │
+│  │  /kubecost            15        redirect→     /kubecost/                 │    │
+│  │  /kubecost/*          20        Cognito →     kubecost-tg (30091)        │    │
+│  │  /* (default)          -        Cognito →     signoz-tg (30301)          │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  Trailing Slash Handling:                                                       │
+│  • /headlamp → 301 redirect → /headlamp/ (required for baseURL routing)        │
+│  • /kubecost → 301 redirect → /kubecost/ (required for nginx proxy)            │
+│                                                                                  │
+│  Kubecost nginx Proxy (in-cluster):                                             │
+│  ┌────────────────────────────────────────────────────────────────────────┐    │
+│  │  ALB → kubecost-nginx:30091 → nginx (rewrite /kubecost/* → /*)          │    │
+│  │                                     → kubecost-cost-analyzer:9090        │    │
+│  └────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  TargetGroupBinding CRDs (AWS LB Controller):                                   │
+│  • signoz-tgb (namespace: signoz)                                              │
+│  • headlamp-tgb (namespace: headlamp)                                          │
+│  • kubecost-tgb (namespace: kubecost)                                          │
+│                                                                                  │
+│  NIST: SC-8 (Transmission Confidentiality - HTTPS), IA-2 (Authentication)      │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
