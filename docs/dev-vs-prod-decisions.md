@@ -9,18 +9,22 @@ This document provides a three-way comparison of infrastructure options:
 
 ## Executive Summary
 
-| Option | Monthly Cost | Pods | Setup Complexity | Vendor Lock-in |
-|--------|-------------|------|------------------|----------------|
-| **Self-Managed PROD** | ~$593/mo | ~42 | High | None (OSS) |
-| **Self-Managed DEV** | ~$249/mo | ~11 | High | None (OSS) |
-| **AWS Managed** | ~$362-581/mo | ~9 | Low | High |
+| Option | Monthly Cost | Pods | Setup Complexity | Vendor Lock-in | Agent-Ready |
+|--------|-------------|------|------------------|----------------|-------------|
+| **Self-Managed PROD** | ~$593/mo | ~42 | High | None (OSS) | ✅ Full |
+| **Self-Managed DEV** | ~$249/mo | ~11 | High | None (OSS) | ✅ Full |
+| **Agent-Optimized Hybrid** | ~$380-520/mo | ~14 | Medium | Medium | ✅ Full |
+| **AWS Managed** | ~$362-581/mo | ~9 | Low | High | ⚠️ Basic |
 
-**AWS Managed uses CloudWatch Observability EKS Add-on:** Deploys 9 DaemonSet pods (CloudWatch Agent + Fluent Bit + ADOT Collector) that forward data to fully managed AWS services.
+**Stack Descriptions:**
+- **AWS Managed**: CloudWatch Observability add-on only (9 DaemonSet pods)
+- **Agent-Optimized Hybrid**: CloudWatch + Istio + Mini Prometheus (no UIs, full API access)
 
 **Key Trade-offs:**
 - **PROD**: Full control, NIST compliance, predictable costs, operational overhead
 - **DEV**: Same architecture at 42% cost reduction, reduced HA
-- **AWS**: Lower ops burden, variable costs, limited customization, no Kiali equivalent
+- **Agent-Optimized**: AI-first design, no UIs, full observability APIs, Istio mTLS
+- **AWS**: Lowest ops burden, variable costs, limited agent capabilities (no request metrics)
 
 ---
 
@@ -136,6 +140,294 @@ AWS::EKS::Addon:
 - High volume workloads (CloudWatch costs escalate quickly)
 - Multi-cloud or hybrid environments
 - Teams requiring PromQL/LogQL query power
+
+---
+
+## Agent-Optimized Hybrid Stack
+
+This configuration is optimized for **AI agent-based infrastructure management**. It combines AWS managed services with minimal self-managed components to give an agent full query capabilities with low operational overhead.
+
+### Design Principles
+
+1. **Agents use APIs, not UIs** - No Kiali, Headlamp, or Grafana needed
+2. **Request-level metrics are essential** - Mini Prometheus for Istio metrics
+3. **CloudWatch for logs** - Good enough, agent can query via API
+4. **Istio for mTLS** - Security compliance (SC-8)
+5. **Minimal pods** - Only what the agent needs
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      AGENT-OPTIMIZED HYBRID STACK                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                      AI INFRASTRUCTURE AGENT                         │   │
+│   │                                                                      │   │
+│   │  Capabilities:                                                       │   │
+│   │  • Query pod CPU/memory (CloudWatch API)                            │   │
+│   │  • Query logs with filters (CloudWatch Logs Insights)               │   │
+│   │  • Query request latency/rate/errors (Prometheus API)               │   │
+│   │  • Query traces (X-Ray API)                                         │   │
+│   │  • Manage deployments (Kubernetes API)                              │   │
+│   │  • Check infrastructure drift (CloudFormation API)                  │   │
+│   │  • Manage Istio traffic policies (Istio API)                        │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                         │
+│            ┌───────────────────────┼───────────────────────┐                │
+│            │                       │                       │                │
+│            ▼                       ▼                       ▼                │
+│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐      │
+│   │   CLOUDWATCH    │     │ MINI PROMETHEUS │     │   KUBERNETES    │      │
+│   │                 │     │                 │     │      API        │      │
+│   │ • Container     │     │ • Istio metrics │     │                 │      │
+│   │   Insights      │     │   only          │     │ • Pods/Deploys  │      │
+│   │ • Logs          │     │ • 24h retention │     │ • ConfigMaps    │      │
+│   │ • X-Ray traces  │     │ • PromQL        │     │ • Istio CRDs    │      │
+│   └─────────────────┘     └─────────────────┘     └─────────────────┘      │
+│            │                       │                       │                │
+│            │                       │                       │                │
+│   ┌────────┴────────┐     ┌───────┴───────┐       ┌──────┴──────┐         │
+│   │  CW AGENT (3)   │     │  PROMETHEUS   │       │   ISTIOD    │         │
+│   │  FLUENT BIT (3) │     │  SERVER (1)   │       │    (2)      │         │
+│   │  ADOT (3)       │     │               │       │  INGRESS(2) │         │
+│   └─────────────────┘     └───────────────┘       │  SIDECARS   │         │
+│                                                    └─────────────┘         │
+│                                                                              │
+│   TOTAL IN-CLUSTER: 14 pods + sidecars                                      │
+│   NO UIs DEPLOYED: Kiali ❌  Headlamp ❌  Grafana ❌                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Component Breakdown
+
+| Component | Pods | Purpose | Agent Uses |
+|-----------|------|---------|------------|
+| **CloudWatch Agent** | 3 (DaemonSet) | Node/pod metrics | CloudWatch API |
+| **Fluent Bit** | 3 (DaemonSet) | Log forwarding | CloudWatch Logs Insights |
+| **ADOT Collector** | 3 (DaemonSet) | Traces to X-Ray | X-Ray API |
+| **Mini Prometheus** | 1 | Istio service metrics | Prometheus API (PromQL) |
+| **istiod** | 2 | Service mesh control plane | Istio API |
+| **istio-ingress** | 2 | Gateway | - |
+| **Istio sidecars** | 1 per app pod | mTLS encryption | - |
+| **TOTAL** | **14 + sidecars** | | |
+
+### What the Agent Can Query
+
+#### CloudWatch API (Container Insights)
+```python
+# Pod resource utilization
+cloudwatch.get_metric_data(
+    MetricDataQueries=[{
+        'MetricStat': {
+            'Metric': {
+                'Namespace': 'ContainerInsights',
+                'MetricName': 'pod_cpu_utilization',
+            }
+        }
+    }]
+)
+```
+
+#### CloudWatch Logs Insights
+```sql
+-- Find error logs in last hour
+fields @timestamp, @message, kubernetes.pod_name
+| filter @message like /error|exception|fatal/i
+| filter kubernetes.namespace_name = "production"
+| sort @timestamp desc
+| limit 100
+```
+
+#### Prometheus API (Istio Metrics) - THE KEY ADDITION
+```promql
+# Request latency P99 by service
+histogram_quantile(0.99,
+  sum(rate(istio_request_duration_milliseconds_bucket[5m]))
+  by (le, destination_service))
+
+# Request rate per service
+sum(rate(istio_requests_total[5m])) by (destination_service)
+
+# Error rate per service
+sum(rate(istio_requests_total{response_code=~"5.*"}[5m]))
+  / sum(rate(istio_requests_total[5m])) by (destination_service)
+
+# mTLS coverage
+sum(istio_requests_total{connection_security_policy="mutual_tls"})
+  / sum(istio_requests_total)
+```
+
+#### X-Ray API
+```python
+# Get slow traces
+xray.get_trace_summaries(
+    StartTime=datetime.now() - timedelta(hours=1),
+    EndTime=datetime.now(),
+    FilterExpression='service("payment") AND responseTime > 2'
+)
+```
+
+#### Kubernetes API
+```bash
+# Agent can execute any kubectl command
+kubectl get pods -n production -o json
+kubectl describe deployment api -n production
+kubectl get events --field-selector type=Warning
+kubectl get virtualservices -n production  # Istio traffic rules
+```
+
+### Mini Prometheus Configuration
+
+```yaml
+# infra/helm/values/prometheus-mini/values.yaml
+# Minimal Prometheus for Istio metrics only - optimized for agent queries
+
+prometheus:
+  server:
+    retention: "24h"  # Short retention, agent queries recent data
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Only store Istio metrics
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+
+  # Disable all unnecessary components
+  alertmanager:
+    enabled: false
+  pushgateway:
+    enabled: false
+  nodeExporter:
+    enabled: false  # CloudWatch handles node metrics
+  kubeStateMetrics:
+    enabled: false  # CloudWatch handles this
+
+  # Only scrape Istio
+  serverFiles:
+    prometheus.yml:
+      scrape_configs:
+        # Istio control plane
+        - job_name: 'istiod'
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names: ['istio-system']
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app]
+              regex: istiod
+              action: keep
+
+        # Istio sidecar proxies (Envoy)
+        - job_name: 'envoy-stats'
+          metrics_path: /stats/prometheus
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              regex: istio-proxy
+              action: keep
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              regex: "true"
+              action: keep
+```
+
+### Installation
+
+```bash
+# 1. Enable CloudWatch Observability add-on
+aws eks create-addon \
+  --cluster-name infra-agent-dev-cluster \
+  --addon-name amazon-cloudwatch-observability \
+  --region us-east-1
+
+# 2. Install Istio (if not already installed)
+istioctl install --set profile=minimal -y
+kubectl label namespace default istio-injection=enabled
+
+# 3. Install Mini Prometheus for Istio metrics
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm upgrade --install prometheus-mini prometheus-community/prometheus \
+  --namespace observability \
+  --create-namespace \
+  -f infra/helm/values/prometheus-mini/values.yaml
+
+# 4. Verify agent can query all APIs
+# CloudWatch
+aws cloudwatch get-metric-data --metric-data-queries '[...]'
+
+# Prometheus
+curl http://prometheus-mini.observability:9090/api/v1/query?query=istio_requests_total
+
+# Kubernetes
+kubectl auth can-i --list
+```
+
+### Agent Query Capabilities Matrix
+
+| Query Type | API | Example Question Agent Can Answer |
+|------------|-----|-----------------------------------|
+| **Pod resources** | CloudWatch | "Which pods are using >80% CPU?" |
+| **Logs** | CW Logs Insights | "Show errors from payment service" |
+| **Traces** | X-Ray | "Find slow requests to /checkout" |
+| **Request latency** | Prometheus | "What's P99 latency for each service?" |
+| **Request rate** | Prometheus | "Which service has highest traffic?" |
+| **Error rate** | Prometheus | "Which service has >1% error rate?" |
+| **mTLS status** | Prometheus | "Is all traffic encrypted?" |
+| **Deployments** | Kubernetes | "What version is deployed?" |
+| **Events** | Kubernetes | "Any pod crashes in last hour?" |
+| **Traffic rules** | Istio API | "What's the canary split for API?" |
+| **Infra drift** | CloudFormation | "Any resources out of sync?" |
+
+### Cost Comparison
+
+| Stack | Pods | Monthly Cost | Agent Capability |
+|-------|------|--------------|------------------|
+| CloudWatch only | 9 | $362-500 | Basic (no request metrics) |
+| **Agent-Optimized Hybrid** | **14** | **$380-520** | **Full** |
+| Self-Managed DEV | 11 | $249 | Full |
+| Self-Managed PROD | 42 | $593 | Full + HA |
+
+### NIST Compliance
+
+| Control | Status | Implementation |
+|---------|--------|----------------|
+| **SC-8** (mTLS) | ✅ | Istio sidecar injection |
+| **AU-2** (Audit) | ✅ | CloudWatch Logs |
+| **AU-6** (Review) | ✅ | Agent queries APIs directly |
+| **SI-4** (Monitoring) | ✅ | Prometheus + CloudWatch |
+| **AC-2** (Accounts) | ✅ | Cognito (no Keycloak needed for agent) |
+| **PM-3** (Costs) | ⚠️ | Account-level only (add Kubecost for pod-level) |
+
+### When to Use Agent-Optimized Hybrid
+
+**Ideal for:**
+- AI-first infrastructure management
+- Teams building agentic DevOps workflows
+- Minimizing human UI dependencies
+- AWS-centric environments with Istio
+
+**Not ideal for:**
+- Teams needing visual dashboards for humans
+- Environments where humans are primary operators
+- Multi-cloud deployments
+
+### Optional Add-ons for Full Agent Capability
+
+| Add-on | Pods | Enables |
+|--------|------|---------|
+| **Kubecost** | +4 | Pod-level cost optimization |
+| **Tempo** | +2 | 100% trace capture (vs X-Ray sampling) |
 
 ---
 
@@ -804,3 +1096,4 @@ For teams wanting OSS compatibility with managed infrastructure:
 | 2.2 | 2025-01-11 | AI Agent | Added Keycloak identity provider section with OIDC integration details |
 | 2.3 | 2026-01-14 | AI Agent | Added AWS CloudWatch Observability EKS Add-on section with pod breakdown, data flow diagram, installation commands, and comparison table |
 | 2.4 | 2026-01-14 | AI Agent | Added NIST 800-53 Rev 5 Compliance Matrix with 33 controls across PROD/DEV/AWS, compliance summary, and gap analysis |
+| 2.5 | 2026-01-14 | AI Agent | Added Agent-Optimized Hybrid Stack for AI-first infrastructure management with CloudWatch + Istio + Mini Prometheus |
