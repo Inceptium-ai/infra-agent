@@ -13,12 +13,129 @@ This document provides a three-way comparison of infrastructure options:
 |--------|-------------|------|------------------|----------------|
 | **Self-Managed PROD** | ~$593/mo | ~42 | High | None (OSS) |
 | **Self-Managed DEV** | ~$249/mo | ~11 | High | None (OSS) |
-| **AWS Managed** | ~$362-581/mo | ~5 | Low | High |
+| **AWS Managed** | ~$362-581/mo | ~9 | Low | High |
+
+**AWS Managed uses CloudWatch Observability EKS Add-on:** Deploys 9 DaemonSet pods (CloudWatch Agent + Fluent Bit + ADOT Collector) that forward data to fully managed AWS services.
 
 **Key Trade-offs:**
 - **PROD**: Full control, NIST compliance, predictable costs, operational overhead
 - **DEV**: Same architecture at 42% cost reduction, reduced HA
 - **AWS**: Lower ops burden, variable costs, limited customization, no Kiali equivalent
+
+---
+
+## AWS CloudWatch Observability EKS Add-on
+
+The **Amazon CloudWatch Observability EKS Add-on** is the AWS-managed observability solution. It's a hybrid approach that deploys lightweight agents in your cluster that forward data to fully managed AWS services.
+
+### Add-on Components (Deployed in EKS)
+
+| Component | Deployment Type | Pods (3-node cluster) | CPU Request | Memory Request |
+|-----------|----------------|----------------------|-------------|----------------|
+| **CloudWatch Agent** | DaemonSet | 3 (1 per node) | 50m/pod | 200Mi/pod |
+| **Fluent Bit** | DaemonSet | 3 (1 per node) | 50m/pod | 100Mi/pod |
+| **ADOT Collector** | DaemonSet | 3 (1 per node) | 100m/pod | 256Mi/pod |
+| **TOTAL** | | **6-9 pods** | **~600m** | **~1.7Gi** |
+
+**Note:** ADOT (AWS Distro for OpenTelemetry) Collector is optional - only needed if using X-Ray tracing.
+
+### Data Flow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    CLOUDWATCH OBSERVABILITY ADD-ON                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  IN-CLUSTER (EKS Pods)                    AWS MANAGED (No Pods)             │
+│  ─────────────────────                    ─────────────────────             │
+│                                                                              │
+│  ┌─────────────────┐                      ┌─────────────────┐               │
+│  │ CloudWatch Agent│ ────────────────────►│ CloudWatch      │               │
+│  │   (DaemonSet)   │      Metrics         │ Metrics         │               │
+│  └─────────────────┘                      │ Container       │               │
+│         │                                 │ Insights        │               │
+│         │ Scrapes kubelet,                └─────────────────┘               │
+│         │ cAdvisor, kube-state                                              │
+│                                                                              │
+│  ┌─────────────────┐                      ┌─────────────────┐               │
+│  │   Fluent Bit    │ ────────────────────►│ CloudWatch Logs │               │
+│  │   (DaemonSet)   │      Logs            │                 │               │
+│  └─────────────────┘                      └─────────────────┘               │
+│         │                                                                    │
+│         │ Tails /var/log/pods                                               │
+│                                                                              │
+│  ┌─────────────────┐                      ┌─────────────────┐               │
+│  │ ADOT Collector  │ ────────────────────►│    AWS X-Ray    │               │
+│  │   (DaemonSet)   │      Traces          │                 │               │
+│  └─────────────────┘                      └─────────────────┘               │
+│         │                                         │                         │
+│         │ OTLP receiver                           │                         │
+│                                           ┌───────▼─────────┐               │
+│                                           │   CloudWatch    │               │
+│                                           │   Dashboards    │               │
+│                                           └─────────────────┘               │
+│                                                                              │
+│  MISSING IN AWS:                                                            │
+│  • Kiali (Istio traffic visualization) - NO EQUIVALENT                      │
+│  • Kubecost (pod-level cost allocation) - Cost Explorer is account-level   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Installation (EKS Add-on)
+
+```bash
+# Enable via eksctl
+eksctl create addon \
+  --cluster infra-agent-dev-cluster \
+  --name amazon-cloudwatch-observability \
+  --region us-east-1
+
+# Or via AWS CLI
+aws eks create-addon \
+  --cluster-name infra-agent-dev-cluster \
+  --addon-name amazon-cloudwatch-observability \
+  --region us-east-1
+
+# Or via CloudFormation
+AWS::EKS::Addon:
+  Type: AWS::EKS::Addon
+  Properties:
+    ClusterName: !Ref EKSCluster
+    AddonName: amazon-cloudwatch-observability
+```
+
+### CloudWatch Observability vs Self-Managed Stack
+
+| Feature | CloudWatch Observability | Self-Managed (LGTM) |
+|---------|------------------------|---------------------|
+| **In-cluster pods** | 6-9 (DaemonSets only) | 35-44 pods |
+| **CPU overhead** | ~600m total | ~5.5 vCPU total |
+| **Memory overhead** | ~1.7Gi total | ~19 GB total |
+| **Metrics query** | CloudWatch Insights | PromQL (powerful) |
+| **Log query** | CloudWatch Insights | LogQL (powerful) |
+| **Trace query** | X-Ray console | TraceQL |
+| **Istio traffic viz** | **Not available** | Kiali |
+| **Pod-level costs** | **Not available** | Kubecost |
+| **Data retention** | 15 months (metrics) | Unlimited (S3) |
+| **Vendor lock-in** | High | None |
+| **Setup complexity** | Low (1 add-on) | High (multiple Helm charts) |
+
+### When to Use CloudWatch Observability
+
+**Good fit:**
+- Teams without Istio service mesh
+- Small clusters (<10 nodes)
+- Low operational capacity (no dedicated platform team)
+- AWS-only deployments (no multi-cloud plans)
+- Low log/metric volume (<5GB logs/day, <1000 metrics)
+
+**Poor fit (use self-managed instead):**
+- Istio users who need Kiali traffic visualization
+- Teams needing pod-level cost allocation
+- High volume workloads (CloudWatch costs escalate quickly)
+- Multi-cloud or hybrid environments
+- Teams requiring PromQL/LogQL query power
 
 ---
 
@@ -322,14 +439,26 @@ mimir:
 │  COST:      Skip               SECURITY: CI/CD only                         │
 │  Pods: ~11    |    Cost: ~$249/mo    |    Vendor Lock-in: None              │
 │                                                                              │
-│  AWS MANAGED                                                                 │
-│  ───────────                                                                │
-│  METRICS:   CloudWatch Container Insights                                    │
-│  LOGS:      Fluent Bit → CloudWatch Logs                                    │
-│  TRACES:    AWS X-Ray                                                        │
-│  DASHBOARDS: CloudWatch Dashboards    TRAFFIC: **None**                     │
-│  COST:      Cost Explorer             SECURITY: ECR + Inspector             │
-│  Pods: ~5     |    Cost: ~$362-581/mo |    Vendor Lock-in: High             │
+│  AWS MANAGED (CloudWatch Observability EKS Add-on)                          │
+│  ─────────────────────────────────────────────────                          │
+│                                                                              │
+│  IN-CLUSTER AGENTS (DaemonSets):                                            │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │ CloudWatch Agent│  │   Fluent Bit    │  │ ADOT Collector  │             │
+│  │  (3 pods)       │  │   (3 pods)      │  │  (3 pods)       │             │
+│  │  Metrics scrape │  │   Log forward   │  │  Trace forward  │             │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘             │
+│           │                    │                    │                       │
+│           ▼                    ▼                    ▼                       │
+│  AWS MANAGED SERVICES (No Pods):                                            │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │   CloudWatch    │  │   CloudWatch    │  │    AWS X-Ray    │             │
+│  │    Metrics      │  │     Logs        │  │                 │             │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
+│                                                                              │
+│  DASHBOARDS: CloudWatch Dashboards    TRAFFIC: **NONE (No Kiali)**         │
+│  COST:      Cost Explorer (no pod $)  SECURITY: ECR + Inspector            │
+│  Pods: ~9 (agents only) | Cost: ~$362-581/mo | Vendor Lock-in: High        │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -345,7 +474,8 @@ mimir:
 │  (42 pods)                    Fixed, predictable costs                      │
 │                                                                              │
 │  AWS MANAGED          ████████████████████████████████░░░░  $362-581/mo     │
-│  (5 pods)                     Variable based on volume                      │
+│  (9 DaemonSet pods)           Variable based on volume                      │
+│  + CW Observability           (logs/metrics/traces ingestion)               │
 │                                                                              │
 │  SELF-MANAGED DEV     ████████████░░░░░░░░░░░░░░░░░░░░░░░░  $249/mo         │
 │  (11 pods)                    58% savings vs Prod                           │
@@ -383,21 +513,24 @@ For teams wanting OSS compatibility with managed infrastructure:
 
 ## Pod Count Summary
 
-| Component | PROD | DEV | AWS Managed |
-|-----------|------|-----|-------------|
-| **Mimir** | 15 pods | 0 | 0 (CloudWatch) |
-| **Loki** | 10 pods | 2 | 0 (CloudWatch) |
-| **Tempo** | 2 pods | 1 | 0 (X-Ray) |
-| **Prometheus** | 2 pods | 2 | 0 (CW Agent) |
-| **Grafana** | 2 pods | 1 | 0 (CW Dashboards) |
-| **Kiali** | 2 pods | 1 | 0 (**No equivalent**) |
-| **Keycloak** | 2 pods | 1 | 0 (Cognito) |
-| **Velero** | 4 pods | 0 | 0 (AWS Backup) |
-| **Kubecost** | 4 pods | 0 | 0 (Cost Explorer) |
-| **Trivy** | 1 pod | 0 | 0 (ECR+Inspector) |
-| **Fluent Bit** | 0 | 0 | 3 (DaemonSet) |
-| **CW Agent** | 0 | 0 | 3 (DaemonSet) |
-| **TOTAL** | **~44 pods** | **~8 pods** | **~6 pods** |
+| Component | PROD | DEV | AWS Managed (CW Observability Add-on) |
+|-----------|------|-----|---------------------------------------|
+| **Mimir** | 15 pods | 0 | 0 → CloudWatch Metrics (managed) |
+| **Loki** | 10 pods | 2 | 0 → CloudWatch Logs (managed) |
+| **Tempo** | 2 pods | 1 | 0 → X-Ray (managed) |
+| **Prometheus** | 2 pods | 2 | 0 → CloudWatch Agent scrapes |
+| **Grafana** | 2 pods | 1 | 0 → CloudWatch Dashboards (managed) |
+| **Kiali** | 2 pods | 1 | 0 → **NO EQUIVALENT** |
+| **Keycloak** | 2 pods | 1 | 0 → Cognito (managed) |
+| **Velero** | 4 pods | 0 | 0 → AWS Backup (managed) |
+| **Kubecost** | 4 pods | 0 | 0 → Cost Explorer (**account-level only**) |
+| **Trivy** | 1 pod | 0 | 0 → ECR + Inspector (managed) |
+| **CloudWatch Agent** | 0 | 0 | 3 (DaemonSet) - metrics collection |
+| **Fluent Bit** | 0 | 0 | 3 (DaemonSet) - log forwarding |
+| **ADOT Collector** | 0 | 0 | 3 (DaemonSet) - trace collection |
+| **TOTAL** | **~44 pods** | **~8 pods** | **~9 pods** (DaemonSets only) |
+
+**AWS Managed Note:** The CloudWatch Observability EKS add-on deploys only DaemonSet agents in your cluster. All storage, querying, and dashboarding happens in fully managed AWS services (no pods).
 
 ---
 
@@ -539,3 +672,4 @@ For teams wanting OSS compatibility with managed infrastructure:
 | 2.0 | 2025-01-10 | AI Agent | Major restructure: Dev vs Prod vs AWS three-way comparison with cost columns in all tables |
 | 2.1 | 2025-01-11 | AI Agent | Added actual resource metrics section with real cluster data |
 | 2.2 | 2025-01-11 | AI Agent | Added Keycloak identity provider section with OIDC integration details |
+| 2.3 | 2026-01-14 | AI Agent | Added AWS CloudWatch Observability EKS Add-on section with pod breakdown, data flow diagram, installation commands, and comparison table |
