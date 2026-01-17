@@ -43,8 +43,8 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 
 ### Storage Assumptions
 1. **No Node-Local Storage**: Pods are ephemeral; node local storage MUST NOT be used for persistence
-2. **S3 for Object Storage**: Logs (Loki), metrics (Mimir), backups (Velero) use S3 with IRSA authentication
-3. **EBS for Block Storage**: Stateful apps (Grafana, Kubecost) use gp3 PVCs - EBS volumes persist independently of pods/nodes
+2. **S3 for Object Storage**: Backups (Velero) use S3 with IRSA authentication
+3. **EBS for Block Storage**: Stateful apps (SigNoz ClickHouse, Kubecost) use gp3 PVCs - EBS volumes persist independently of pods/nodes
 4. **EBS is NOT Node-Local**: gp3 PVCs are AWS-managed block storage, not on node's disk; volumes survive node failures
 5. **EFS for Shared Access**: If multiple pods need ReadWriteMany access, use EFS (not currently required)
 6. **etcd for CRDs**: Lightweight data (Trivy reports) stored as Kubernetes CRDs in etcd
@@ -53,8 +53,8 @@ This document defines the architecture for an AI-powered Infrastructure Agent sy
 
 | Storage Type | Use Case | NIST Control | Addons Using |
 |--------------|----------|--------------|--------------|
-| **S3** | Object storage (logs, metrics, backups) | SC-28, CP-9 | Loki, Mimir, Velero |
-| **EBS (gp3)** | Block storage (databases, stateful apps) | SC-28 | Grafana, Kubecost |
+| **S3** | Object storage (backups) | SC-28, CP-9 | Velero |
+| **EBS (gp3)** | Block storage (databases, stateful apps) | SC-28 | SigNoz (ClickHouse, ZooKeeper), Kubecost |
 | **etcd (CRDs)** | Kubernetes-native resources | CM-8 | Trivy Operator |
 | **EFS** | Shared file access (ReadWriteMany) | - | Not currently used |
 | **Node Local** | NEVER | - | Prohibited |
@@ -190,7 +190,8 @@ cfn-guard validate \
 | Component | Version | Purpose |
 |-----------|---------|---------|
 | Istio | 1.28.2 | Service mesh, mTLS |
-| **SigNoz** | Latest | Unified observability (metrics, logs, traces) - replaces LGTM stack |
+| **SigNoz** | 0.74 | Unified observability (metrics, logs, traces) |
+| **Kiali** | 2.20 | Istio traffic visualization |
 | Trivy Operator | 0.29 | In-cluster vulnerability scanning |
 | Velero | 1.17 | Backup/restore |
 | Kubecost | 2.8 | Cost management (with nginx proxy for ALB routing) |
@@ -198,7 +199,7 @@ cfn-guard validate \
 | LangGraph | Latest | Agent orchestration |
 
 **Note:** SigNoz replaced the LGTM stack (Loki, Grafana, Tempo, Mimir, Prometheus) as of 2026-01-14.
-This simplifies the observability architecture from 5+ components to 1 unified platform.
+Kiali was re-added (2026-01-17) for real-time Istio traffic visualization - complements SigNoz traces.
 
 ### Python Dependencies
 | Package | Purpose |
@@ -253,181 +254,78 @@ This section provides complete specifications for all Kubernetes add-ons deploye
 
 ---
 
-#### 2. Loki (Log Aggregation)
+#### 2. SigNoz (Unified Observability)
 
 | Property | Value |
 |----------|-------|
-| **Chart** | `grafana/loki` |
-| **Namespace** | `observability` |
-| **Purpose** | Centralized log storage and querying |
-| **NIST Controls** | AU-2 (Audit events), AU-9 (Audit protection), AU-11 (Retention) |
+| **Chart** | `signoz/signoz` |
+| **Namespace** | `signoz` |
+| **Purpose** | Unified observability platform for metrics, logs, and traces |
+| **NIST Controls** | AU-2 (Audit events), AU-6 (Review), AU-9 (Protection), AU-11 (Retention), SI-4 (Monitoring) |
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SigNoz Platform                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐ │
+│  │   Frontend   │   │Query Service │   │Alert Manager │   │ OTel Collector│ │
+│  │    (UI)      │   │   (API)      │   │              │   │   (ingest)   │ │
+│  │  Port: 3301  │   │  Port: 8080  │   │  Port: 9093  │   │ Port: 4317/18│ │
+│  └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘ │
+│          │                  │                  │                  │         │
+│          └──────────────────┴──────────────────┴──────────────────┘         │
+│                                      │                                       │
+│                             ┌────────▼────────┐                             │
+│                             │   ClickHouse    │                             │
+│                             │   (columnar DB) │                             │
+│                             │  + ZooKeeper    │                             │
+│                             └─────────────────┘                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 **Components:**
 | Component | Replicas | CPU Request | Memory Request | Ports |
 |-----------|----------|-------------|----------------|-------|
-| loki (SingleBinary) | 1 | 500m | 1Gi | 3100 (HTTP), 9095 (gRPC), 7946 (Memberlist) |
+| signoz-frontend | 1 | 100m | 128Mi | 3301 (HTTP) |
+| signoz-query-service | 1 | 200m | 256Mi | 8080 (HTTP) |
+| signoz-otel-collector | 1 | 200m | 256Mi | 4317 (gRPC), 4318 (HTTP) |
+| signoz-alertmanager | 1 | 50m | 64Mi | 9093 (HTTP) |
+| clickhouse | 1 | 500m | 1Gi | 8123 (HTTP), 9000 (Native) |
+| zookeeper | 1 | 100m | 256Mi | 2181 (Client) |
+| k8s-infra-otel-agent | 1/node | 100m | 100Mi | N/A (DaemonSet) |
 
-**Storage:**
-| Type | Backend | Bucket/Path | Retention |
-|------|---------|-------------|-----------|
-| Chunks | S3 | `{project}-{env}-loki-{account}/chunks` | 30 days → IA |
-| Index | S3 | `{project}-{env}-loki-{account}/index` | 30 days → IA |
-
-**Health Checks:**
-- Readiness: `GET /ready` on port 3100
-- Liveness: `GET /loki/api/v1/status/buildinfo` on port 3100
-
-**Dependencies:** S3 bucket (CloudFormation), IRSA role
-
----
-
-#### 3. Prometheus (Metrics Scraping)
-
-| Property | Value |
-|----------|-------|
-| **Chart** | `prometheus-community/prometheus` |
-| **Namespace** | `observability` |
-| **Purpose** | Scrape Kubernetes/Istio metrics and push to Mimir |
-| **NIST Controls** | AU-2 (Audit events), SI-4 (System monitoring) |
-
-**Components:**
-| Component | Replicas | CPU Request | Memory Request | Ports |
-|-----------|----------|-------------|----------------|-------|
-| prometheus-server | 1 | 100m | 512Mi | 80 (HTTP) |
-| node-exporter | 1 per node | 10m | 32Mi | 9100 (Metrics) |
-| kube-state-metrics | 1 | 10m | 64Mi | 8080 (Metrics) |
-
-**Data Flow (with Kafka WAL):**
-```
-[Kubernetes Pods/Nodes] → [Prometheus SCRAPES] → [Remote Write] → [Mimir Distributor]
-                                                                          │
-                                                                          ▼
-                                                                    [Kafka WAL]
-                                                                          │
-                                                                          ▼
-                                                                  [Mimir Ingester]
-                                                                          │
-                                                                          ▼
-                                                                    [S3 Storage]
-```
-
-**Why Kafka WAL (Write-Ahead Log):**
-- **Durability**: If an ingester crashes, metrics in Kafka survive and replay
-- **Decoupling**: Distributors don't block waiting for slow ingesters
-- **Scaling**: Add/remove ingesters without data loss during rebalancing
-- **NIST AU-9**: Protection of audit information through WAL durability
-
-**Health Checks:**
-- Readiness: `GET /-/ready` on port 9090
-- Liveness: `GET /-/healthy` on port 9090
-
-**Dependencies:** Mimir (remote write target)
-
----
-
-#### 3b. Mimir with Kafka (Metrics Storage)
-
-| Property | Value |
-|----------|-------|
-| **Chart** | `grafana/mimir-distributed` |
-| **Namespace** | `observability` |
-| **Purpose** | Long-term metrics storage with Kafka WAL for durability |
-| **NIST Controls** | AU-2 (Audit events), AU-9 (Audit protection), AU-11 (Retention) |
-
-**Components:**
-| Component | Replicas | CPU Request | Memory Request | Ports |
-|-----------|----------|-------------|----------------|-------|
-| kafka | 1 | 500m | 1Gi | 9092 (Kafka) |
-| distributor | 2 | 100m | 256Mi | 8080 (HTTP) |
-| ingester | 2 | 100m | 512Mi | 8080 (HTTP) |
-| querier | 2 | 100m | 256Mi | 8080 (HTTP) |
-| query-frontend | 1 | 50m | 128Mi | 8080 (HTTP) |
-| store-gateway | 1 | 100m | 256Mi | 8080 (HTTP) |
-| compactor | 1 | 100m | 256Mi | 8080 (HTTP) |
-| nginx (gateway) | 2 | 50m | 64Mi | 80 (HTTP) |
-
-**Kafka Configuration:**
-```yaml
-kafka:
-  enabled: true
-  replicas: 1
-  persistence:
-    enabled: true
-    size: 5Gi
-    storageClass: gp3
-
-mimir:
-  structuredConfig:
-    ingest_storage:
-      enabled: true
-      kafka:
-        address: mimir-kafka.observability.svc.cluster.local:9092
-```
-
-**Storage:**
-| Type | Backend | Bucket |
-|------|---------|--------|
-| Blocks | S3 | `infra-agent-{env}-mimir-{account}` |
-| Ruler | S3 | `infra-agent-{env}-mimir-{account}` |
-| Alertmanager | S3 | `infra-agent-{env}-mimir-{account}` |
-
-**Health Checks:**
-- Readiness: `GET /ready` on port 8080
-- Liveness: `GET /ready` on port 8080
-
-**Dependencies:** S3 bucket (CloudFormation), IRSA role, Kafka (bundled)
-
----
-
-#### 3c. Tempo (Distributed Tracing)
-
-| Property | Value |
-|----------|-------|
-| **Chart** | `grafana/tempo` |
-| **Namespace** | `observability` |
-| **Purpose** | Distributed tracing for debugging request latency across microservices |
-| **NIST Controls** | AU-2 (Audit events), AU-6 (Audit review), AU-12 (Audit generation) |
-
-**Components:**
-| Component | Replicas | CPU Request | Memory Request | Ports |
-|-----------|----------|-------------|----------------|-------|
-| tempo | 2 | 100m | 256Mi | 3200 (HTTP), 4317 (OTLP gRPC), 4318 (OTLP HTTP) |
-
-**Data Flow:**
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   App Pod   │───►│   Istio     │───►│   Tempo     │───►│     S3      │
-│  (request)  │    │   Sidecar   │    │  (ingest)   │    │  (storage)  │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                         │
-                   Generates trace
-                   context headers
-                   (B3, W3C)
-```
-
-**Trace Receivers:**
+**Data Ingest:**
 | Protocol | Port | Use Case |
 |----------|------|----------|
-| OTLP gRPC | 4317 | OpenTelemetry native apps |
-| OTLP HTTP | 4318 | OpenTelemetry HTTP clients |
-| Jaeger Thrift | 14268 | Legacy Jaeger clients |
-| Jaeger gRPC | 14250 | Jaeger agents |
-| Zipkin | 9411 | Zipkin-instrumented apps |
+| OTLP gRPC | 4317 | OpenTelemetry native apps (has issues with Istio) |
+| OTLP HTTP | 4318 | **Recommended** - works reliably with Istio mTLS |
+
+**Why SigNoz over LGTM Stack:**
+- Single platform for metrics, logs, and traces (vs 5+ components)
+- Native OpenTelemetry support
+- Columnar ClickHouse storage (efficient for time-series)
+- Lower operational complexity
+- Built-in alerting and dashboards
 
 **Storage:**
-| Type | Backend | Bucket |
-|------|---------|--------|
-| Traces | S3 | `infra-agent-{env}-tempo-{account}` |
+| Type | Backend | Retention |
+|------|---------|-----------|
+| Metrics | ClickHouse (EBS gp3) | 15 days (configurable) |
+| Logs | ClickHouse (EBS gp3) | 15 days (configurable) |
+| Traces | ClickHouse (EBS gp3) | 15 days (configurable) |
 
 **Health Checks:**
-- Readiness: `GET /ready` on port 3200
-- Liveness: `GET /ready` on port 3200
+- Frontend: `GET /` on port 3301
+- Query Service: `GET /api/v1/health` on port 8080
+- OTel Collector: `GET /` on port 13133
 
-**Dependencies:** S3 bucket (CloudFormation), IRSA role
+**Dependencies:** EBS storage class (gp3), PriorityClass for scheduling
 
 ---
 
-#### 3d. Kiali (Service Mesh Visualization)
+#### 3. Kiali (Service Mesh Visualization)
 
 | Property | Value |
 |----------|-------|
@@ -455,36 +353,7 @@ mimir:
 
 ---
 
-#### 4. Grafana (Dashboards)
-
-| Property | Value |
-|----------|-------|
-| **Chart** | `grafana/grafana` |
-| **Namespace** | `observability` |
-| **Purpose** | Unified visualization for logs, metrics, traces |
-| **NIST Controls** | AU-7 (Audit reduction), SI-4 (System monitoring) |
-
-**Components:**
-| Component | Replicas | CPU Request | Memory Request | Ports |
-|-----------|----------|-------------|----------------|-------|
-| grafana | 1-2 | 250m | 512Mi | 3000 (HTTP) |
-
-**Data Sources (auto-configured):**
-| Source | URL | Type |
-|--------|-----|------|
-| Loki | `http://loki-gateway.observability:3100` | Logs |
-| Mimir | `http://mimir-gateway.observability:80/prometheus` | Metrics (long-term) |
-| Prometheus | `http://prometheus-server.observability:80` | Metrics (real-time) |
-
-**Health Checks:**
-- Readiness: `GET /api/health` on port 3000
-- Liveness: `GET /api/health` on port 3000
-
-**Dependencies:** Loki, Mimir, Prometheus (for data sources)
-
----
-
-#### 5. Trivy Operator (Security Scanning)
+#### 4. Trivy Operator (Security Scanning)
 
 | Property | Value |
 |----------|-------|
@@ -647,21 +516,17 @@ AWS Cognito replaced self-hosted Keycloak (as of 2026-01-14) for simplified oper
 
 ### Add-on Port Summary
 
-| Service | Namespace | Service Port | Target Port | Protocol |
-|---------|-----------|--------------|-------------|----------|
-| istiod | istio-system | 15010, 15012, 443 | 15010, 15012, 15017 | gRPC, HTTPS |
-| istio-ingress | istio-system | 80, 443 | 8080, 8443 | HTTP, HTTPS |
-| kiali | istio-system | 20001 | 20001 | HTTP |
-| loki-gateway | observability | 3100 | 3100 | HTTP |
-| tempo | observability | 3200, 4317, 4318 | 3200, 4317, 4318 | HTTP, gRPC |
-| mimir-gateway | observability | 80 | 80 | HTTP |
-| mimir-kafka | observability | 9092 | 9092 | Kafka |
-| prometheus-server | observability | 80 | 9090 | HTTP |
-| grafana | observability | 3000 | 3000 | HTTP |
-| trivy-operator | trivy-system | 8080 | 8080 | HTTP |
-| velero | velero | 8085 | 8085 | HTTP |
-| kubecost | kubecost | 9090 | 9090 | HTTP |
-| headlamp | headlamp | 4466 | 4466 | HTTP |
+| Service | Namespace | Service Port | Target Port | Protocol | NodePort (ALB) |
+|---------|-----------|--------------|-------------|----------|----------------|
+| istiod | istio-system | 15010, 15012, 443 | 15010, 15012, 15017 | gRPC, HTTPS | - |
+| istio-ingress | istio-system | 80, 443 | 8080, 8443 | HTTP, HTTPS | - |
+| kiali | istio-system | 20001 | 20001 | HTTP | 30520 |
+| signoz-frontend | signoz | 3301 | 3301 | HTTP | 30301 |
+| signoz-otel-collector | signoz | 4317, 4318 | 4317, 4318 | gRPC, HTTP | - |
+| trivy-operator | trivy-system | 8080 | 8080 | HTTP | - |
+| velero | velero | 8085 | 8085 | HTTP | - |
+| kubecost-nginx | kubecost | 80 | 80 | HTTP | 30091 |
+| headlamp | headlamp | 80 | 4466 | HTTP | 30446 |
 
 ---
 
@@ -669,73 +534,39 @@ AWS Cognito replaced self-hosted Keycloak (as of 2026-01-14) for simplified oper
 
 This section provides detailed data flow diagrams for each add-on category.
 
-### 1. Logging Flow (Loki)
+### 1. Unified Observability Flow (SigNoz)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              LOGGING PIPELINE                                    │
+│                         SIGNOZ UNIFIED OBSERVABILITY                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ App Pod  │    │ Promtail │    │  Loki    │    │    S3    │    │ Grafana  │  │
-│  │ (stdout) │───►│ (scrape) │───►│ (ingest) │───►│ (chunks) │◄───│ (query)  │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
-│       │                                │                              │         │
-│       │                                │                              │         │
-│  Writes to          Scrapes from       Compresses &          Runs LogQL        │
-│  container          /var/log/pods      indexes logs          queries           │
-│  stdout/stderr                                                                  │
+│  METRICS:                                                                        │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐                   │
+│  │ App Pod  │    │OTel Agent│    │  OTel    │    │ClickHouse│    ┌──────────┐  │
+│  │ /metrics │───►│(DaemonSet)───►│Collector │───►│   (DB)   │───►│  SigNoz  │  │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    │    UI    │  │
+│                                                                   └──────────┘  │
+│  LOGS:                                                                           │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐         │         │
+│  │ App Pod  │    │OTel Agent│    │  OTel    │    │ClickHouse│         │         │
+│  │ (stdout) │───►│(DaemonSet)───►│Collector │───►│   (DB)   │─────────┘         │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘                   │
 │                                                                                  │
-│  NIST: AU-2 (Audit Events), AU-9 (Protection), AU-11 (Retention)               │
+│  TRACES:                                                                         │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐                   │
+│  │ App Pod  │    │  Istio   │    │  OTel    │    │ClickHouse│                   │
+│  │(request) │───►│ Sidecar  │───►│Collector │───►│   (DB)   │                   │
+│  └──────────┘    └──────────┘    │ :4318    │    └──────────┘                   │
+│                  (adds trace     └──────────┘                                   │
+│                   headers)       HTTP/protobuf                                  │
+│                                  (NOT gRPC!)                                    │
+│                                                                                  │
+│  NIST: AU-2 (Audit Events), AU-6 (Review), AU-9 (Protection), SI-4 (Monitoring)│
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Metrics Flow (Prometheus → Mimir)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              METRICS PIPELINE                                    │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ App Pod  │    │Prometheus│    │  Mimir   │    │  Kafka   │    │  Mimir   │  │
-│  │ /metrics │◄───│ (scrape) │───►│Distributor───►│  (WAL)   │───►│ Ingester │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
-│                                                                        │        │
-│                                                                        ▼        │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ Grafana  │◄───│  Mimir   │◄───│  Mimir   │◄───│    S3    │◄───│  Mimir   │  │
-│  │ (query)  │    │ Querier  │    │Query-FE  │    │ (blocks) │    │Compactor │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
-│                                                                                  │
-│  NIST: AU-2 (Audit Events), AU-9 (WAL Durability), SI-4 (Monitoring)           │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3. Tracing Flow (Tempo)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              TRACING PIPELINE                                    │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ App Pod  │    │  Istio   │    │  Tempo   │    │    S3    │    │ Grafana  │  │
-│  │(request) │───►│ Sidecar  │───►│ (ingest) │───►│ (traces) │◄───│ (query)  │  │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
-│       │               │                                               │         │
-│       │               │                                               │         │
-│  App makes       Envoy injects      Receives traces      View trace            │
-│  HTTP call       trace headers      via OTLP/Jaeger      waterfall             │
-│                  (B3, W3C)          protocols            diagrams              │
-│                                                                                  │
-│  Trace Context: traceparent: 00-{trace-id}-{span-id}-01                        │
-│                                                                                  │
-│  NIST: AU-2 (Audit Events), AU-6 (Audit Review), AU-12 (Audit Generation)      │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 4. Traffic Visualization Flow (Kiali)
+### 2. Traffic Visualization Flow (Kiali)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -905,9 +736,11 @@ This section provides detailed data flow diagrams for each add-on category.
 │  │  Path Pattern         Priority   Auth          Target Group (NodePort)   │    │
 │  │  ─────────────────────────────────────────────────────────────────────   │    │
 │  │  /headlamp             5        redirect→     /headlamp/                 │    │
-│  │  /headlamp/*          10        Cognito →     headlamp-tg (30446)        │    │
+│  │  /headlamp/*          10        passthrough   headlamp-tg (30446)        │    │
 │  │  /kubecost            15        redirect→     /kubecost/                 │    │
 │  │  /kubecost/*          20        Cognito →     kubecost-tg (30091)        │    │
+│  │  /kiali               25        redirect→     /kiali/                    │    │
+│  │  /kiali/*             30        Cognito →     kiali-tg (30520)           │    │
 │  │  /* (default)          -        Cognito →     signoz-tg (30301)          │    │
 │  │                                                                          │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
@@ -915,6 +748,7 @@ This section provides detailed data flow diagrams for each add-on category.
 │  Trailing Slash Handling:                                                       │
 │  • /headlamp → 301 redirect → /headlamp/ (required for baseURL routing)        │
 │  • /kubecost → 301 redirect → /kubecost/ (required for nginx proxy)            │
+│  • /kiali → 301 redirect → /kiali/ (required for web_root routing)             │
 │                                                                                  │
 │  Kubecost nginx Proxy (in-cluster):                                             │
 │  ┌────────────────────────────────────────────────────────────────────────┐    │
@@ -926,43 +760,9 @@ This section provides detailed data flow diagrams for each add-on category.
 │  • signoz-tgb (namespace: signoz)                                              │
 │  • headlamp-tgb (namespace: headlamp)                                          │
 │  • kubecost-tgb (namespace: kubecost)                                          │
+│  • kiali-tgb (namespace: istio-system)                                         │
 │                                                                                  │
 │  NIST: SC-8 (Transmission Confidentiality - HTTPS), IA-2 (Authentication)      │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### 10. Unified Observability Dashboard (Grafana)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         GRAFANA DATA SOURCES                                     │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│                              ┌──────────────┐                                   │
-│                              │   GRAFANA    │                                   │
-│                              │  Dashboard   │                                   │
-│                              └──────┬───────┘                                   │
-│                                     │                                           │
-│            ┌────────────────────────┼────────────────────────┐                 │
-│            │                        │                        │                 │
-│            ▼                        ▼                        ▼                 │
-│     ┌─────────────┐          ┌─────────────┐          ┌─────────────┐         │
-│     │    Loki     │          │    Mimir    │          │    Tempo    │         │
-│     │   (logs)    │          │  (metrics)  │          │  (traces)   │         │
-│     │   LogQL     │          │   PromQL    │          │   TraceQL   │         │
-│     └─────────────┘          └─────────────┘          └─────────────┘         │
-│            │                        │                        │                 │
-│            ▼                        ▼                        ▼                 │
-│     ┌─────────────┐          ┌─────────────┐          ┌─────────────┐         │
-│     │     S3      │          │     S3      │          │     S3      │         │
-│     │   (chunks)  │          │  (blocks)   │          │  (traces)   │         │
-│     └─────────────┘          └─────────────┘          └─────────────┘         │
-│                                                                                  │
-│  Correlation: Click log → see trace → see metrics at that time                 │
-│                                                                                  │
-│  NIST: AU-7 (Audit Reduction), SI-4 (System Monitoring)                        │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -978,11 +778,14 @@ This section provides detailed data flow diagrams for each add-on category.
 | istiod | 500m | 2Gi | 2 | 1000m | 4Gi |
 | istio-ingressgateway | 100m | 128Mi | 2 | 200m | 256Mi |
 | istio sidecars (per pod) | 100m | 128Mi | ~20 | 2000m | 2.5Gi |
-| **Observability (LGMP + Kiali)** |
-| Loki | 500m | 1Gi | 3 | 1500m | 3Gi |
-| Grafana | 250m | 512Mi | 2 | 500m | 1Gi |
-| Prometheus | 100m | 512Mi | 1 | 100m | 512Mi |
-| Mimir | 500m | 1Gi | 2 | 1000m | 2Gi |
+| **Observability (SigNoz + Kiali)** |
+| SigNoz Frontend | 100m | 128Mi | 1 | 100m | 128Mi |
+| SigNoz Query Service | 200m | 256Mi | 1 | 200m | 256Mi |
+| SigNoz OTel Collector | 200m | 256Mi | 1 | 200m | 256Mi |
+| SigNoz Alertmanager | 50m | 64Mi | 1 | 50m | 64Mi |
+| ClickHouse | 500m | 1Gi | 1 | 500m | 1Gi |
+| ZooKeeper | 100m | 256Mi | 1 | 100m | 256Mi |
+| OTel Agent (DaemonSet) | 100m | 100Mi | 3 | 300m | 300Mi |
 | Kiali | 50m | 128Mi | 1 | 50m | 128Mi |
 | **Security & Operations** |
 | Trivy Operator | 100m | 256Mi | 1 | 100m | 256Mi |
@@ -1371,12 +1174,8 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 |-----------|---------|-------|
 | EKS | 1.34 | Latest standard support |
 | Istio | 1.28 | mTLS enabled |
-| Loki | 3.6 | Scalable mode |
-| Grafana | 12.x | Unified observability |
-| Prometheus | 3.8 | Metrics scraping |
-| Mimir | 3.0 | Long-term metrics storage |
-| Tempo | 2.6 | Distributed tracing |
-| Kiali | 2.20 | Traffic visualization |
+| **SigNoz** | 0.74 | Unified observability (metrics, logs, traces) |
+| Kiali | 2.20 | Istio traffic visualization |
 | Trivy Operator | 0.29 | In-cluster scanning |
 | Velero | 1.17 | Backup/restore |
 | Kubecost | 2.8 | Cost management |
@@ -1407,3 +1206,6 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | 2.0 | 2025-01-11 | AI Agent | Added Known Compliance Gaps section documenting SC-8 partial compliance for observability stack |
 | 2.1 | 2025-01-11 | AI Agent | Added Keycloak SSO/OIDC for centralized authentication across all UI components |
 | 2.2 | 2025-01-11 | AI Agent | Added IaC Validation Pipeline section (cfn-lint, cfn-guard for NIST compliance) |
+| 3.0 | 2026-01-14 | AI Agent | Major: Replaced LGTM stack with SigNoz unified observability |
+| 3.1 | 2026-01-15 | AI Agent | Replaced Keycloak with AWS Cognito (managed service) |
+| 3.2 | 2026-01-17 | AI Agent | Re-added Kiali for Istio traffic visualization; updated ALB routing |
