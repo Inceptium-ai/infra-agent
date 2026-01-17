@@ -1,0 +1,20 @@
+# Kiali TargetGroupBinding - Auto-registers EKS nodes with ALB target group
+# Required for automatic target registration when nodes terminate/launch
+#
+# See: docs/requirements.md - NFR-050/051 (EKS Node Lifecycle)
+#
+# Apply: kubectl apply -f infra/helm/values/kiali/targetgroupbinding.yaml
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kiali-tgb
+  namespace: istio-system
+  labels:
+    app: kiali
+spec:
+  serviceRef:
+    name: kiali
+    port: 20001
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-kiali-tg/7b0614394ce78a79
+  targetType: instance
