@@ -41,6 +41,20 @@ server:
       cpu: 500m
       memory: 512Mi
 
+  # Security context for NIST compliance
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
   # Disable persistence - metrics are only for real-time graph
   persistentVolume:
     enabled: false
@@ -52,6 +66,23 @@ server:
   service:
     type: ClusterIP
     servicePort: 9090
+
+# Configmap reload sidecar resources and security
+configmapReload:
+  prometheus:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+    containerSecurityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
 
 # ConfigMap for scrape config - Istio metrics only
 serverFiles:

@@ -15,6 +15,19 @@ initContainers:
     volumeMounts:
       - name: plugins
         mountPath: /target
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
 
 # Resource limits
 resources:
@@ -24,6 +37,20 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
+
+# Security context for velero server (NIST AC-6, SC-4)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 
 # Backup storage configuration
 configuration:
@@ -89,6 +116,21 @@ nodeAgent:
     limits:
       cpu: 500m
       memory: 512Mi
+
+  # Security context - node-agent needs root for file system access
+  # This is a known limitation of Velero fs-backup
+  podSecurityContext:
+    runAsUser: 0  # Required for fs-backup
+    fsGroup: 0
+
+  containerSecurityContext:
+    readOnlyRootFilesystem: false  # Needs write for backup staging
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - DAC_READ_SEARCH  # Required for reading files across namespaces
 
   # Disable Istio sidecar injection for DaemonSet
   # DaemonSets don't need mTLS - they perform local backup operations

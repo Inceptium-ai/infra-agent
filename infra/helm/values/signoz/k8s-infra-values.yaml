@@ -15,6 +15,24 @@ otelAgent:
   # Istio sidecar NOT injected for DaemonSets
   podAnnotations:
     sidecar.istio.io/inject: "false"
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Security context - needs root for host fs access (logs, metrics)
+  # This is a known limitation for node-level telemetry collection
+  # kube-linter exceptions: run-as-non-root, no-read-only-root-fs, sensitive-host-mounts
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - DAC_READ_SEARCH  # Required for reading log files
 
 # Deployment collector (cluster-wide metrics)
 otelDeployment:
@@ -22,6 +40,23 @@ otelDeployment:
   # Istio sidecar injection
   podAnnotations:
     sidecar.istio.io/inject: "true"
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
 
 # Log collection
 logsCollection:
