@@ -238,6 +238,47 @@ This document defines all requirements for the AI-powered Infrastructure Agent s
 
 **Recommended:** 3x t3a.xlarge nodes (4 vCPU, 16 Gi each) = 12 vCPU, 48 Gi total
 
+### 4.5 EKS Node Lifecycle
+
+| ID | Requirement | Priority | Status |
+|----|-------------|----------|--------|
+| NFR-050 | EKS nodes SHALL terminate on scale-down (not stop) | Must | By Design |
+| NFR-051 | EKS nodes SHALL launch fresh on scale-up (not start) | Must | By Design |
+| NFR-052 | PersistentVolumes SHALL survive node termination | Must | Implemented |
+| NFR-053 | Bastion instance SHALL stop/start (preserve state) | Must | Implemented |
+
+**Design Rationale:**
+
+EKS Managed Node Groups use AWS Auto Scaling Groups (ASG), which are designed for ephemeral compute:
+
+| Component | Scale Down | Scale Up | State |
+|-----------|------------|----------|-------|
+| **EKS Nodes** | Terminate | Launch new | Ephemeral (cattle) |
+| **Bastion** | Stop | Start | Persistent (pet) |
+
+**Why nodes terminate (not stop):**
+- Kubernetes nodes are "cattle, not pets" - designed to be disposable
+- ASG manages instance lifecycle - terminate/launch is the only supported operation
+- Fresh nodes ensure clean state without configuration drift
+- AWS best practice for managed Kubernetes
+
+**What IS preserved across node termination:**
+- EBS PersistentVolumes (AZ-bound, reattach to new nodes in same AZ)
+- Kubernetes state (stored in etcd on AWS-managed control plane)
+- Pod definitions (Deployments/StatefulSets recreate pods on new nodes)
+- ConfigMaps and Secrets (stored in etcd)
+
+**What is NOT preserved:**
+- Local ephemeral storage (emptyDir volumes)
+- Node-specific cache (container image cache rebuilt)
+- In-memory state (pods restart fresh)
+
+**Alternative for stop/start behavior (NOT recommended):**
+- Self-managed node groups with standalone EC2 instances
+- Adds operational complexity
+- Loses ASG benefits (auto-replacement, rolling updates)
+- Not aligned with Kubernetes design principles
+
 ---
 
 ## 5. Operational Requirements
@@ -322,3 +363,4 @@ This document defines all requirements for the AI-powered Infrastructure Agent s
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-17 | AI Agent | Initial requirements document |
+| 1.1 | 2026-01-17 | AI Agent | Add EKS Node Lifecycle requirements (NFR-050 to NFR-053) |
