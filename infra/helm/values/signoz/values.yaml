@@ -104,13 +104,16 @@ otelCollector:
 otelCollectorMetrics:
   enabled: true
 
-  # DaemonSet - runs on every node
-  # Istio sidecar NOT injected for DaemonSets (host network)
+  # DaemonSet - runs on every node to collect host/node metrics
+  # Istio sidecar DISABLED for DaemonSets:
+  # 1. They don't receive network traffic - they scrape local metrics
+  # 2. Sidecar adds ~100m CPU overhead per node
+  # 3. Causes scheduling failures on resource-constrained nodes
   podLabels:
-    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/inject: "false"
 
   podAnnotations:
-    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/inject: "false"
 
   resources:
     requests:

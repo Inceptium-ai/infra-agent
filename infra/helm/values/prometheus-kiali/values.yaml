@@ -1,0 +1,93 @@
+# Minimal Prometheus for Kiali - Istio Metrics Only
+#
+# This is a minimal Prometheus deployment specifically for Kiali's
+# traffic visualization. It only scrapes Istio metrics.
+#
+# SigNoz handles full observability (metrics, logs, traces).
+# This Prometheus is ONLY for Kiali's graph feature.
+#
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm upgrade --install prometheus-kiali prometheus-community/prometheus \
+#     -n istio-system \
+#     -f infra/helm/values/prometheus-kiali/values.yaml
+#
+---
+
+# Disable all components except server
+alertmanager:
+  enabled: false
+
+kube-state-metrics:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+# Minimal server configuration
+server:
+  name: prometheus-kiali
+
+  # Resources for Kiali graph - needs enough memory for service discovery
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Disable persistence - metrics are only for real-time graph
+  persistentVolume:
+    enabled: false
+
+  # Short retention - only need recent data for graph
+  retention: "2h"
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    servicePort: 9090
+
+# ConfigMap for scrape config - Istio metrics only
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+      # Scrape Istio control plane (istiod)
+      - job_name: 'istiod'
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - istio-system
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: istiod;http-monitoring
+
+      # Scrape Envoy sidecars (proxies)
+      - job_name: 'envoy-stats'
+        metrics_path: /stats/prometheus
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            action: keep
+            regex: '.*-envoy-prom'
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:15090
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod_name

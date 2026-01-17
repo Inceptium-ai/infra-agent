@@ -58,21 +58,16 @@ cr:
         app.kubernetes.io/component: observability
         app.kubernetes.io/managed-by: infra-agent
 
-    # External services - integrate with SigNoz stack
+    # External services configuration
     external_services:
-      # Prometheus - SigNoz OTel Collector exposes Prometheus metrics
-      # SigNoz query-service provides Prometheus-compatible API
+      # Prometheus - minimal instance for Istio metrics (Kiali graph)
+      # SigNoz handles full observability; this Prometheus is ONLY for Kiali
       prometheus:
-        url: "http://signoz-query-service.signoz.svc.cluster.local:8080"
+        url: "http://prometheus-kiali-prometheus-kiali.istio-system.svc.cluster.local:9090"
 
-      # Tracing - SigNoz provides distributed tracing
-      # Kiali can link to SigNoz for trace details
+      # Tracing - disabled (SigNoz handles traces, Kiali focuses on graph)
       tracing:
-        enabled: true
-        provider: tempo
-        # SigNoz query-service Jaeger-compatible endpoint
-        internal_url: "http://signoz-query-service.signoz.svc.cluster.local:8080/api/traces"
-        use_grpc: false
+        enabled: false
 
       # Grafana - disabled, using SigNoz dashboards instead
       grafana:

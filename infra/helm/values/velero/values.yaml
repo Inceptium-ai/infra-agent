@@ -90,6 +90,12 @@ nodeAgent:
       cpu: 500m
       memory: 512Mi
 
+  # Disable Istio sidecar injection for DaemonSet
+  # DaemonSets don't need mTLS - they perform local backup operations
+  # Sidecar adds ~100m CPU overhead causing scheduling failures
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
   # Tolerate all taints
   tolerations:
     - operator: Exists
