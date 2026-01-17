@@ -1,0 +1,20 @@
+# Headlamp TargetGroupBinding - Auto-registers EKS nodes with ALB target group
+# Required for automatic target registration when nodes terminate/launch
+#
+# See: docs/requirements.md - NFR-050/051 (EKS Node Lifecycle)
+#
+# Apply: kubectl apply -f infra/helm/values/headlamp/targetgroupbinding.yaml
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: headlamp-tgb
+  namespace: headlamp
+  labels:
+    app: headlamp
+spec:
+  serviceRef:
+    name: headlamp-alb
+    port: 80
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-headlamp-tg/bd45f0f77dfae8e7
+  targetType: instance

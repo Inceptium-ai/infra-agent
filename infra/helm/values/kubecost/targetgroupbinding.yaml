@@ -1,0 +1,20 @@
+# Kubecost TargetGroupBinding - Auto-registers EKS nodes with ALB target group
+# Required for automatic target registration when nodes terminate/launch
+#
+# See: docs/requirements.md - NFR-050/051 (EKS Node Lifecycle)
+#
+# Apply: kubectl apply -f infra/helm/values/kubecost/targetgroupbinding.yaml
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kubecost-tgb
+  namespace: kubecost
+  labels:
+    app: kubecost
+spec:
+  serviceRef:
+    name: kubecost-alb
+    port: 80
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-kubecost-tg/fc31724bf1e79506
+  targetType: instance

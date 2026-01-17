@@ -1,0 +1,20 @@
+# SigNoz TargetGroupBinding - Auto-registers EKS nodes with ALB target group
+# Required for automatic target registration when nodes terminate/launch
+#
+# See: docs/requirements.md - NFR-050/051 (EKS Node Lifecycle)
+#
+# Apply: kubectl apply -f infra/helm/values/signoz/targetgroupbinding.yaml
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: signoz-tgb
+  namespace: signoz
+  labels:
+    app: signoz
+spec:
+  serviceRef:
+    name: signoz-alb
+    port: 8080
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-signoz-tg/7d0000cfeb2bbc45
+  targetType: instance
