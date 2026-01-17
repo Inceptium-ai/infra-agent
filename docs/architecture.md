@@ -662,7 +662,6 @@ AWS Cognito replaced self-hosted Keycloak (as of 2026-01-14) for simplified oper
 | velero | velero | 8085 | 8085 | HTTP |
 | kubecost | kubecost | 9090 | 9090 | HTTP |
 | headlamp | headlamp | 4466 | 4466 | HTTP |
-| keycloak | identity | 8080, 8443 | 8080, 8443 | HTTP, HTTPS |
 
 ---
 
@@ -1378,15 +1377,16 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 | Mimir | 3.0 | Long-term metrics storage |
 | Tempo | 2.6 | Distributed tracing |
 | Kiali | 2.20 | Traffic visualization |
-| Keycloak | 26.0 | Centralized SSO/OIDC |
 | Trivy Operator | 0.29 | In-cluster scanning |
 | Velero | 1.17 | Backup/restore |
 | Kubecost | 2.8 | Cost management |
 | Headlamp | 0.39 | Admin console |
-| Python | 3.11+ | LangGraph compatible |
+| AWS Cognito | N/A | Centralized SSO/OIDC (managed) |
+| Python | 3.13+ | cfn-lint compatible |
 | cfn-lint | Latest | CloudFormation linting |
 | cfn-guard | 3.x | NIST policy-as-code |
-| PostgreSQL (RDS) | 17.7 | Keycloak database |
+| kube-linter | 0.8+ | Kubernetes security linting |
+| kubeconform | 0.7+ | Kubernetes schema validation |
 
 ---
 

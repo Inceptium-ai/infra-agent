@@ -15,10 +15,11 @@ global:
     enabled: false
     proxy: false
 
-  # Prometheus integration (use Mimir)
+  # Prometheus integration (Kubecost uses internal Prometheus)
+  # NOTE: LGTM stack removed, Kubecost runs its own metrics collection
   prometheus:
     enabled: false
-    fqdn: http://mimir-nginx.observability.svc.cluster.local:80/prometheus
+    fqdn: ""
 
 # Kubecost configuration
 kubecostModel:
@@ -107,7 +108,7 @@ kubecostProductConfigs:
   awsSpotDataBucket: ""  # Optional: for spot pricing data
 
   # Shared costs
-  sharedNamespaces: "kube-system,istio-system,observability"
+  sharedNamespaces: "kube-system,istio-system,signoz"
   sharedOverhead: "0"
 
   # Savings recommendations

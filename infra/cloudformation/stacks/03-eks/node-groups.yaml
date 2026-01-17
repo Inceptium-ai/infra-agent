@@ -56,10 +56,13 @@ Parameters:
 
   GeneralNodeMinSize:
     Type: Number
-    Default: 2
-    MinValue: 1
+    Default: 3
+    MinValue: 3
     MaxValue: 100
-    Description: Minimum number of general nodes
+    Description: |
+      Minimum number of general nodes.
+      CRITICAL: Must be >= 3 to ensure multi-AZ StatefulSet scheduling.
+      See: docs/lessons-learned.md #53 - StatefulSet PV AZ-Binding Incident
 
   GeneralNodeMaxSize:
     Type: Number

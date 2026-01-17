@@ -1,0 +1,18 @@
+# Demo Namespace for Tracing Tests
+# Purpose: Test observability stack with sample microservices
+#
+# Deploy: kubectl apply -f namespace.yaml
+# Delete: kubectl delete -f namespace.yaml
+#
+# NOTE: Istio ENABLED to demonstrate mTLS and traffic visualization via Kiali
+# OTLP uses HTTP/protobuf (port 4318) which works through Istio Envoy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    app.kubernetes.io/managed-by: infra-agent
+    purpose: tracing-demo
+    # Enable Istio for mTLS and Kiali traffic visualization
+    istio-injection: enabled

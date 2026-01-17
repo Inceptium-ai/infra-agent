@@ -1,69 +1,81 @@
 # Component Access URLs & Instructions
 
-This document provides URLs and access instructions for all infrastructure components across environments.
+This document provides URLs and access instructions for all infrastructure components.
 
 ---
 
 ## Environment Quick Reference
 
-| Component | DEV Access | TST | PRD |
-|-----------|------------|-----|-----|
-| Grafana | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
-| Loki | Internal (via Grafana) | Internal | Internal |
-| Tempo | Internal (via Grafana) | Internal | Internal |
-| Prometheus | Internal (via Grafana) | Internal | Internal |
-| Kiali | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
-| Headlamp | ALB + Cognito (HTTPS) | ALB + Cognito | ALB + Cognito + MFA |
-| Kubecost | `kubectl port-forward` → http://localhost:9091 | ALB (future) | ALB + MFA |
-| Mimir | Internal only (via Grafana) | Same | Same |
+| Component | DEV Access | Auth Method |
+|-----------|------------|-------------|
+| SigNoz | ALB + Cognito (HTTPS) | Cognito OIDC |
+| Headlamp | ALB + EKS OIDC (HTTPS) | Cognito → EKS OIDC |
+| Kubecost | ALB + Cognito (HTTPS) | Cognito OIDC |
+| Kiali | ALB + Cognito (HTTPS) | Cognito OIDC |
 
 ---
 
-## Internet Access via ALB + Cognito (DEV)
+## Internet Access via ALB (DEV)
 
-The observability tools are accessible remotely via Application Load Balancer with AWS Cognito authentication.
+All observability tools are accessible via Application Load Balancer with AWS Cognito authentication.
 
-### ALB URLs (Internet-Accessible)
+### ALB URLs
 
 | Service | URL | Authentication |
 |---------|-----|----------------|
-| **Grafana** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/` | Cognito OIDC |
-| **Headlamp** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp` | Cognito OIDC |
-| **Kiali** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kiali` | Cognito OIDC |
+| **SigNoz** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/` | Cognito OIDC |
+| **Headlamp** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp/` | EKS OIDC (Cognito) |
+| **Kubecost** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kubecost/` | Cognito OIDC |
+| **Kiali** | `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kiali/` | Cognito OIDC |
 
-### Authentication Flow
+### Authentication Architecture
 
-1. Navigate to any ALB URL above
-2. You'll be redirected to AWS Cognito login page
-3. Enter your credentials (email/password)
-4. MFA prompt (if enabled for production)
-5. On success, redirected back to the service
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    ALB (HTTPS:443)                                      │
+│                           infra-agent-dev-obs-alb-1650635651                            │
+└───────────────────────────────────────┬─────────────────────────────────────────────────┘
+                                        │
+        ┌───────────────┬───────────────┼───────────────┬───────────────┐
+        │               │               │               │               │
+        ▼               ▼               ▼               ▼               ▼
+   Path: /      Path: /headlamp/*  Path: /kubecost/*  Path: /kiali/*
+        │               │               │               │
+        ▼               │               ▼               ▼
+┌───────────────┐       │       ┌───────────────┐ ┌───────────────┐
+│ ALB Cognito   │       │       │ ALB Cognito   │ │ ALB Cognito   │
+│ Auth Action   │       │       │ Auth Action   │ │ Auth Action   │
+└───────┬───────┘       │       └───────┬───────┘ └───────┬───────┘
+        │               │               │                 │
+        ▼               ▼               ▼                 ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│    SigNoz     │ │   Headlamp    │ │   Kubecost    │ │     Kiali     │
+│  (port 30301) │ │  (port 30446) │ │ nginx proxy   │ │  (port 30520) │
+│               │ │               │ │  (port 30091) │ │               │
+│  No additional│ │ Handles OIDC  │ │               │ │  No additional│
+│  auth needed  │ │ internally    │ │  No additional│ │  auth needed  │
+│               │ │ (EKS OIDC)    │ │  auth needed  │ │               │
+└───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘
+```
 
 ### Service-Specific Authentication
 
-| Service | ALB/Cognito Auth | Additional Auth Required |
-|---------|------------------|-------------------------|
-| **Grafana** | ✅ Cognito OIDC | ❌ None - JWT auto-login via `X-Amzn-Oidc-Data` header |
-| **Kiali** | ✅ Cognito OIDC | ❌ None - Anonymous mode (ALB already authenticated) |
-| **Headlamp** | ✅ Cognito OIDC | ⚠️ **K8s Token Required** - See note below |
+| Service | ALB Auth | Additional Auth | K8s API Access |
+|---------|----------|-----------------|----------------|
+| **SigNoz** | Cognito OIDC | None | N/A |
+| **Headlamp** | None (passthrough) | EKS OIDC via Cognito | Per-user identity |
+| **Kubecost** | Cognito OIDC | None | N/A |
+| **Kiali** | Cognito OIDC | None (anonymous internally) | N/A |
 
-#### Headlamp Token Requirement (Known Limitation)
-
-Headlamp requires a Kubernetes service account token to interact with the K8s API, regardless of ALB authentication. This is a fundamental architectural constraint - Headlamp needs K8s API credentials to function.
-
-**Workaround:** Generate a token after Cognito login:
-```bash
-kubectl create token headlamp -n headlamp --duration=8h
-```
-
-**Future Improvement Options:**
-1. Configure Headlamp OIDC with Cognito (complex setup)
-2. Auto-inject token via init container
-3. Use AWS IAM Roles for Service Accounts (IRSA) with EKS Pod Identity
+**Headlamp EKS OIDC Integration:**
+- Headlamp handles its own OIDC authentication with Cognito
+- Tokens are used directly against EKS API via OIDC identity provider
+- Per-user K8s audit trail (NIST AU-3 compliant)
+- Users must be in `platform-admins` Cognito group for cluster-admin access
 
 ### Cognito User Management
 
-**Cognito User Pool:** `infra-agent-dev-users` (us-east-1_49eiiC4Ew)
+**User Pool:** `infra-agent-dev-users` (us-east-1_49eiiC4Ew)
 
 **Create a new user:**
 ```bash
@@ -75,622 +87,282 @@ aws cognito-idp admin-create-user \
   --region us-east-1
 ```
 
-**Add user to group:**
+**Add user to platform-admins group (for K8s access):**
 ```bash
-# Groups: admins, operators, viewers
 aws cognito-idp admin-add-user-to-group \
   --user-pool-id us-east-1_49eiiC4Ew \
   --username user@example.com \
-  --group-name admins \
+  --group-name platform-admins \
   --region us-east-1
 ```
 
-### NIST Compliance
-
-| Control | Implementation |
-|---------|---------------|
-| NIST IA-2 | Cognito authentication with optional MFA |
-| NIST IA-5 | Password policy (12+ chars, complexity requirements) |
-| NIST SC-8 | HTTPS/TLS 1.3 encryption via ALB |
+**Available Groups:**
+| Group | K8s Role | Purpose |
+|-------|----------|---------|
+| `platform-admins` | cluster-admin | Full cluster access |
+| `developers` | view | Read-only cluster access |
 
 ### SSL Certificate Note
 
-DEV uses a self-signed certificate. Your browser will show a security warning - this is expected. Click "Advanced" → "Proceed" to continue.
-
-For production, use a proper ACM certificate with a custom domain.
+DEV uses a self-signed certificate. Your browser will show a security warning - click "Advanced" → "Proceed" to continue.
 
 ---
 
-## DEV Environment Access (SSM Tunnel Method)
+## Local Access via SSM Tunnel (DEV)
 
-For DEV environment, we use **SSM port forwarding** for maximum security - **no internet exposure**.
+For direct kubectl access and port-forwarding, use SSM tunnel.
 
 ### Prerequisites
-1. AWS CLI v2 configured with appropriate credentials
+1. AWS CLI v2 configured
 2. [SSM Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed
-3. kubectl installed locally
+3. kubectl installed
 
-### Step 1: Start SSM Tunnel to EKS API
+### Step 1: Start SSM Tunnel
 
-**Keep this terminal open while working:**
+```bash
+/Users/ymuwakki/infra-agent/scripts/tunnel.sh
+```
+
+Or manually:
 ```bash
 aws ssm start-session \
-  --target i-06b868c656de96829 \
+  --target i-02c424847cd5f557e \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters '{"host":["C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com"],"portNumber":["443"],"localPortNumber":["6443"]}'
 ```
 
-### Step 2: Configure kubectl (one-time setup)
+### Step 2: Configure kubectl (one-time)
+
 ```bash
-# Get EKS config
 aws eks update-kubeconfig --name infra-agent-dev-cluster --region us-east-1
-
-# Point to localhost tunnel
 sed -i.bak 's|https://C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com|https://localhost:6443|' ~/.kube/config
-
-# Skip TLS verification (cert doesn't include localhost)
 kubectl config set-cluster arn:aws:eks:us-east-1:340752837296:cluster/infra-agent-dev-cluster --insecure-skip-tls-verify=true
 ```
 
-### Step 3: Port Forward to Services
-
-Open separate terminals for each service you want to access:
+### Step 3: Port Forward Services
 
 ```bash
-# Grafana (dashboards, logs, metrics)
-kubectl port-forward svc/grafana 3000:3000 -n observability
-# Access: http://localhost:3000
-# Credentials: admin / (get from: kubectl get secret grafana -n observability -o jsonpath='{.data.admin-password}' | base64 -d)
+# SigNoz (unified observability)
+kubectl port-forward svc/signoz-frontend 3301:3301 -n signoz
+# Access: http://localhost:3301
 
-# Kiali (Istio traffic visualization)
-kubectl port-forward svc/kiali 20001:20001 -n istio-system
-# Access: http://localhost:20001/kiali
-# Auth: Anonymous mode (no token required)
-
-# Headlamp (K8s admin console)
+# Headlamp (K8s admin)
 kubectl port-forward svc/headlamp 8080:80 -n headlamp
 # Access: http://localhost:8080
-# Token: kubectl create token headlamp -n headlamp
 
 # Kubecost (cost analysis)
 kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost
 # Access: http://localhost:9091
 
-# Prometheus (metrics - usually accessed via Grafana)
-kubectl port-forward svc/prometheus-server 9090:80 -n observability
-# Access: http://localhost:9090
-
-# Loki API (usually accessed via Grafana)
-kubectl port-forward svc/loki-gateway 3100:3100 -n observability
-
-# Mimir API (usually accessed via Grafana)
-kubectl port-forward svc/mimir-gateway 9080:80 -n observability
+# Kiali (Istio traffic visualization)
+kubectl port-forward svc/kiali 20001:20001 -n istio-system
+# Access: http://localhost:20001/kiali
 ```
 
-### Quick Access Script
+### Services Script
 
-Save this as `~/bin/infra-agent-tunnel.sh`:
 ```bash
-#!/bin/bash
-# Start SSM tunnel to EKS
-echo "Starting SSM tunnel to EKS API..."
-aws ssm start-session \
-  --target i-06b868c656de96829 \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com"],"portNumber":["443"],"localPortNumber":["6443"]}'
-```
-
-### Multi-Service Port Forward Script
-
-Save this as `~/bin/infra-agent-services.sh` or use `scripts/services.sh`:
-```bash
-#!/bin/bash
-# Port forward all services (run after tunnel is established)
-echo "Port forwarding all services..."
-
-# Observability
-kubectl port-forward svc/grafana 3000:3000 -n observability &
-kubectl port-forward svc/loki-gateway 3100:3100 -n observability &
-kubectl port-forward svc/tempo 3200:3200 -n observability &
-kubectl port-forward svc/prometheus-server 9090:80 -n observability &
-
-# Service Mesh
-kubectl port-forward svc/kiali 20001:20001 -n istio-system &
-
-# Operations
-kubectl port-forward svc/headlamp 8080:80 -n headlamp &
-kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost &
-
-echo ""
-echo "Services available at:"
-echo "  Grafana:    http://localhost:3000     (dashboards)"
-echo "  Loki:       http://localhost:3100     (logs)"
-echo "  Tempo:      http://localhost:3200     (traces)"
-echo "  Prometheus: http://localhost:9090     (metrics)"
-echo "  Kiali:      http://localhost:20001/kiali  (traffic)"
-echo "  Headlamp:   http://localhost:8080     (K8s admin)"
-echo "  Kubecost:   http://localhost:9091     (costs)"
-echo ""
-echo "Press Ctrl+C to stop all port forwards"
-wait
+/Users/ymuwakki/infra-agent/scripts/services.sh
 ```
 
 ---
 
 ## Service Details
 
----
+### SigNoz (Unified Observability)
 
-### Grafana Dashboard
-**Purpose:** Unified visualization for metrics, logs, and traces
+**Purpose:** Metrics, logs, and traces in a single platform
 
-| Environment | Access Method | Port |
-|-------------|--------------|------|
-| DEV | `kubectl port-forward svc/grafana 3000:3000 -n observability` | 3000 |
-| TST | ALB + Cognito (future) | 443 |
-| PRD | ALB + Cognito + MFA (future) | 443 |
+| Feature | Description |
+|---------|-------------|
+| Metrics | PromQL-compatible queries |
+| Logs | Full-text search, structured logging |
+| Traces | Distributed tracing with TraceQL |
+| Alerts | Built-in alerting engine |
 
-**Credentials (DEV):**
-- Username: `admin`
-- Password: `e3GJubngHenyPktuxI7nIFexnD323flPhtPgCnjO`
-
-**Pre-configured Dashboards:**
-- EKS Cluster Overview
-- Pod Resource Utilization
-- Istio Service Mesh Metrics
-- Loki Logs Dashboard
-
-**Access Instructions (DEV):**
-1. Ensure SSM tunnel is running (Step 1 above)
-2. Run: `kubectl port-forward svc/grafana 3000:3000 -n observability`
-3. Open browser: http://localhost:3000
-4. Login with admin credentials above
-
----
-
-### Loki (Logs)
-**Purpose:** Log aggregation and querying
-
-| Environment | Internal URL | Query Language |
-|-------------|--------------|----------------|
-| DEV | `http://loki.observability.svc:3100` | LogQL |
-| TST | `http://loki.observability.svc:3100` | LogQL |
-| PRD | `http://loki.observability.svc:3100` | LogQL |
-
-**Access via Grafana:**
-1. Open Grafana
-2. Navigate to Explore
-3. Select "Loki" data source
-4. Use LogQL queries
-
-**Example Queries:**
-```logql
-# All logs from infra-agent namespace
-{namespace="infra-agent"}
-
-# Error logs from chat-agent
-{namespace="infra-agent", app="chat-agent"} |= "error"
-
-# Logs with specific trace ID
-{namespace="infra-agent"} | json | trace_id="abc123"
+**Architecture:**
 ```
+┌─────────────────────────────────────────────────────────┐
+│                      SigNoz                             │
+├─────────────────────────────────────────────────────────┤
+│  Frontend (UI)  │  Query Service  │  Alert Manager      │
+├─────────────────────────────────────────────────────────┤
+│              OpenTelemetry Collector                    │
+├─────────────────────────────────────────────────────────┤
+│                   ClickHouse                            │
+│            (columnar OLAP database)                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Data Retention:**
+- Metrics: 15 days (configurable)
+- Logs: 15 days (configurable)
+- Traces: 15 days (configurable)
+
+**Access:**
+- ALB: `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/`
+- Local: `kubectl port-forward svc/signoz-frontend 3301:3301 -n signoz` → http://localhost:3301
 
 ---
 
-### Kiali (Traffic Visualization)
-**Purpose:** Real-time Istio service mesh traffic visualization
+### Headlamp (K8s Admin Console)
 
-| Environment | Access Method | Port |
-|-------------|---------------|------|
-| DEV | `kubectl port-forward svc/kiali 20001:20001 -n istio-system` | 20001 |
-| TST | ALB + Cognito (future) | 443 |
-| PRD | ALB + Cognito + MFA (future) | 443 |
+**Purpose:** Web-based Kubernetes management with per-user audit trail
 
-**Features:**
-- Real-time traffic flow graph between services
-- Request rates, error rates, latency visualization
-- Service dependency topology
-- Istio configuration validation
-- Traffic animation
+| Feature | Description |
+|---------|-------------|
+| Cluster Overview | Node/pod health |
+| Resource Management | Create, edit, delete K8s resources |
+| Log Viewing | Container logs |
+| YAML Editor | Direct resource editing |
 
-**Access Instructions (DEV):**
-1. Ensure SSM tunnel is running (Step 1 above)
-2. Run: `kubectl port-forward svc/kiali 20001:20001 -n istio-system`
-3. Open browser: http://localhost:20001/kiali
-4. No login required - Kiali uses anonymous mode (authentication handled by ALB + Cognito for internet access)
+**Authentication Flow:**
+1. User navigates to `/headlamp/`
+2. Headlamp redirects to Cognito for OIDC login
+3. User authenticates with Cognito credentials
+4. Headlamp receives OIDC token
+5. Token used against EKS API (via EKS OIDC identity provider)
+6. All K8s actions logged with user identity
 
----
-
-### Prometheus (Metrics Scraper)
-**Purpose:** Scrape Kubernetes metrics and push to Mimir
-
-| Environment | Internal URL | Query Language |
-|-------------|--------------|----------------|
-| DEV | `http://prometheus-server.observability.svc:80` | PromQL |
-| TST | `http://prometheus-server.observability.svc:80` | PromQL |
-| PRD | `http://prometheus-server.observability.svc:80` | PromQL |
-
-**Access Instructions (DEV):**
-1. Ensure SSM tunnel is running
-2. Run: `kubectl port-forward svc/prometheus-server 9090:80 -n observability`
-3. Open browser: http://localhost:9090
-
-**Data Flow:**
-```
-[K8s Pods/Nodes] → [Prometheus SCRAPES] → [remote_write] → [Mimir STORES]
-```
+**Access:**
+- ALB: `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/headlamp/`
+- Local: `kubectl port-forward svc/headlamp 8080:80 -n headlamp` → http://localhost:8080
+  - Note: Local access requires manual token: `kubectl create token headlamp -n headlamp`
 
 ---
 
-### Mimir (Metrics Storage)
-**Purpose:** Long-term metrics storage (S3-backed)
-
-| Environment | Internal URL | Query Language |
-|-------------|--------------|----------------|
-| DEV | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
-| TST | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
-| PRD | `http://mimir-gateway.observability.svc:80/prometheus` | PromQL |
-
-**Access via Grafana:**
-1. Open Grafana
-2. Navigate to Explore
-3. Select "Mimir" data source
-4. Use PromQL queries
-
-**Example Queries:**
-```promql
-# CPU usage by pod
-sum(rate(container_cpu_usage_seconds_total{namespace="infra-agent"}[5m])) by (pod)
-
-# Memory usage
-container_memory_working_set_bytes{namespace="infra-agent"}
-
-# Request latency P99
-histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
-```
-
----
-
-### Tempo (Distributed Tracing)
-**Purpose:** Distributed tracing backend (S3-backed)
-
-| Environment | Internal URL | Query Language |
-|-------------|--------------|----------------|
-| DEV | `http://tempo.observability.svc:3200` | TraceQL |
-| TST | `http://tempo.observability.svc:3200` | TraceQL |
-| PRD | `http://tempo.observability.svc:3200` | TraceQL |
-
-**Access via Port Forward (DEV):**
-```bash
-kubectl port-forward svc/tempo 3200:3200 -n observability
-# Access: http://localhost:3200
-```
-
-**Access via Grafana:**
-1. Open Grafana
-2. Navigate to Explore
-3. Select "Tempo" data source
-4. Use TraceQL queries or search by trace ID
-
-**Example Queries:**
-```traceql
-# Find traces by service name
-{resource.service.name="chat-agent"}
-
-# Find traces with errors
-{status=error}
-
-# Find traces with high latency (>1s)
-{duration>1s}
-
-# Find traces by HTTP method
-{span.http.method="POST"}
-```
-
-**Data Flow:**
-```
-[App with OTEL SDK] → [OTLP endpoint] → [Tempo Distributor] → [S3 Storage]
-```
-
----
-
-## Kubernetes Admin Console (Headlamp)
-
-**Purpose:** Web-based Kubernetes management
-
-| Environment | Access Method |
-|-------------|---------------|
-| DEV | `kubectl port-forward svc/headlamp 8080:80 -n headlamp` → http://localhost:8080 |
-| TST | ALB + Cognito (future) |
-| PRD | ALB + Cognito + MFA (future) |
-
-**Features:**
-- Cluster health overview
-- Node/pod management
-- Log viewing
-- Resource creation (DEV/TST only)
-- YAML editor for resources
-
-**Access Instructions (DEV):**
-1. Ensure SSM tunnel is running (Step 1 above)
-2. Run: `kubectl port-forward svc/headlamp 8080:80 -n headlamp`
-3. Open browser: http://localhost:8080
-4. Generate auth token and copy it:
-   ```bash
-   kubectl create token headlamp -n headlamp
-   ```
-5. Paste the token into Headlamp login screen
-
-**Token Notes:**
-- Default token expires in **1 hour**
-- Generate a new token anytime by running the command above
-- For longer-lived token (8 hours): `kubectl create token headlamp -n headlamp --duration=8h`
-
----
-
-## Application Load Balancers
-
-### API Gateway ALB
-**Purpose:** External API access
-
-| Environment | URL | TLS |
-|-------------|-----|-----|
-| DEV | `https://api.dev.infra-agent.internal` | AWS ACM certificate |
-| TST | `https://api.tst.infra-agent.internal` | AWS ACM certificate |
-| PRD | `https://api.infra-agent.com` | AWS ACM certificate |
-
-**Health Check Endpoint:**
-```bash
-curl https://api.dev.infra-agent.internal/health
-```
-
-### Internal ALB (Service-to-Service)
-**Purpose:** Internal service communication
-
-| Environment | DNS |
-|-------------|-----|
-| DEV | `internal-alb.dev.infra-agent.internal` |
-| TST | `internal-alb.tst.infra-agent.internal` |
-| PRD | `internal-alb.prd.infra-agent.internal` |
-
----
-
-## Bastion Access
-
-**Purpose:** Emergency cluster access (prefer Headlamp for normal operations)
-
-### Access via AWS Session Manager (Recommended)
-
-```bash
-# Install Session Manager plugin
-# https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
-
-# Start session
-aws ssm start-session \
-  --target i-0123456789abcdef0 \
-  --region us-east-1
-
-# Once connected, configure kubectl
-aws eks update-kubeconfig --name infra-agent-dev-cluster --region us-east-1
-```
-
-### Instance Details
-
-| Environment | Instance ID | Private IP |
-|-------------|-------------|------------|
-| DEV | Retrieve via: `aws ec2 describe-instances --filters "Name=tag:Name,Values=infra-agent-dev-bastion"` | 10.0.48.x |
-| TST | Similar query with tst tag | 10.0.48.x |
-| PRD | Similar query with prd tag | 10.0.48.x |
-
-**Security Notes:**
-- No SSH port exposed (Session Manager only)
-- No public IP
-- All sessions logged to CloudWatch
-- 30-minute idle timeout
-
----
-
-## AI Chat Agent (CLI)
-
-**Purpose:** Primary operator interface
-
-### Installation
-
-```bash
-# Clone repository
-git clone https://github.com/your-org/infra-agent.git
-cd infra-agent
-
-# Install dependencies
-pip install -e .
-
-# Configure AWS credentials
-aws configure
-
-# Run chat agent
-infra-agent chat
-```
-
-### CLI Commands
-
-```bash
-# Start interactive chat
-infra-agent chat
-
-# Execute single command
-infra-agent exec "show cluster status"
-
-# Deploy to environment
-infra-agent deploy --env dev --version 1.2.3
-
-# Check compliance
-infra-agent compliance --control CM-8
-```
-
-### Example Session
-
-```
-$ infra-agent chat
-
-🤖 AI Infrastructure Agent v0.1.0
-Connected to: infra-agent-dev-cluster (us-east-1)
-
-You: Show me the cluster status
-
-Agent: Here's the current cluster status:
-
-Cluster: infra-agent-dev-cluster
-Version: 1.34
-Status: ACTIVE
-Nodes: 3/3 Ready
-Pods: 47/50 Running
-
-Namespaces:
-- infra-agent: 12 pods
-- observability: 18 pods
-- istio-system: 8 pods
-- kube-system: 9 pods
-
-Would you like me to show detailed pod status for any namespace?
-
-You: Check for drift
-
-Agent: Running drift detection on all CloudFormation stacks...
-
-Results:
-✅ infra-agent-dev-vpc: IN_SYNC
-✅ infra-agent-dev-eks: IN_SYNC
-⚠️ infra-agent-dev-security-groups: DRIFTED
-   - Resource: sg-0123456789 (EKSNodesSecurityGroup)
-   - Difference: Inbound rule added manually
-
-Would you like me to remediate the drift?
-
-You: yes
-
-Agent: Remediating drift for infra-agent-dev-security-groups...
-✅ Drift remediated. Stack is now IN_SYNC.
-```
-
----
-
-## Database (RDS)
-
-### Connection Details
-
-| Environment | Endpoint | Port | Database |
-|-------------|----------|------|----------|
-| DEV | `infra-agent-dev-postgres.xxxxx.us-east-1.rds.amazonaws.com` | 5432 | infraagent |
-| TST | `infra-agent-tst-postgres.xxxxx.us-east-1.rds.amazonaws.com` | 5432 | infraagent |
-| PRD | `infra-agent-prd-postgres.xxxxx.us-east-1.rds.amazonaws.com` | 5432 | infraagent |
-
-**Access from EKS Pods:**
-Credentials stored in AWS Secrets Manager and injected via External Secrets Operator.
-
-**Direct Access (Emergency):**
-```bash
-# From bastion
-psql -h infra-agent-dev-postgres.xxxxx.us-east-1.rds.amazonaws.com \
-     -U admin \
-     -d infraagent
-```
-
----
-
-## Security Scanning (Trivy)
-
-### Vulnerability Reports
-
-**Via Grafana:**
-1. Open Grafana
-2. Navigate to Dashboards > Security
-3. Select "Trivy Vulnerability Report"
-
-**Via kubectl:**
-```bash
-# Get vulnerability reports
-kubectl get vulnerabilityreports -A
-
-# Get detailed report
-kubectl describe vulnerabilityreport <name> -n <namespace>
-```
-
-**Via CLI:**
-```bash
-# Scan specific image
-infra-agent security scan --image nginx:latest
-
-# Get namespace report
-infra-agent security report --namespace infra-agent
-```
-
----
-
-## Cost Management (Kubecost)
-
-**Purpose:** Kubernetes cost analysis and optimization
-
-| Environment | Access Method |
-|-------------|---------------|
-| DEV | `kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost` → http://localhost:9091 |
-| TST | ALB (future) |
-| PRD | ALB + MFA (future) |
-
-**Access Instructions (DEV):**
-1. Ensure SSM tunnel is running (Step 1 above)
-2. Run: `kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost`
-3. Open browser: http://localhost:9091
-4. Wait ~25 minutes for initial data collection
-
-**Key Views:**
-- Cost by Namespace
-- Cost by Deployment
-- Idle Resource Identification
-- Efficiency Recommendations
+### Kubecost (Cost Analysis)
+
+**Purpose:** Kubernetes cost visibility and optimization
+
+| Feature | Description |
+|---------|-------------|
+| Cost Allocation | Cost by namespace, deployment, pod |
+| Efficiency | Idle resource identification |
+| Recommendations | Right-sizing suggestions |
+| Reports | Cost trends and forecasting |
 
 **Why Kubecost vs AWS Cost Explorer:**
-- AWS Cost Explorer: Shows EC2/EBS costs (node-level)
-- Kubecost: Shows cost per pod/namespace/deployment (K8s workload level)
+- AWS Cost Explorer: EC2/EBS costs (node-level)
+- Kubecost: Cost per pod/namespace/deployment (K8s workload level)
+
+**Access:**
+- ALB: `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kubecost/`
+- Local: `kubectl port-forward svc/kubecost-cost-analyzer 9091:9090 -n kubecost` → http://localhost:9091
+
+**Note:** Initial data collection takes ~25 minutes after deployment.
+
+---
+
+### Kiali (Istio Traffic Visualization)
+
+**Purpose:** Real-time service mesh topology and traffic visualization for Istio
+
+| Feature | Description |
+|---------|-------------|
+| Traffic Graph | Real-time service-to-service communication |
+| Health Monitoring | Workload and service health status |
+| Configuration Validation | Istio config validation and recommendations |
+| Distributed Tracing | Integration with SigNoz for trace details |
+
+**Why Kiali + SigNoz:**
+- SigNoz: Deep trace analysis, metrics, logs (observability data)
+- Kiali: Real-time mesh topology, traffic flow, Istio config (mesh visualization)
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│                        Kiali                            │
+├─────────────────────────────────────────────────────────┤
+│  Traffic Graph  │  Workload Health  │  Config Validation│
+├─────────────────────────────────────────────────────────┤
+│              Prometheus Metrics (from SigNoz)           │
+├─────────────────────────────────────────────────────────┤
+│                   Istio Control Plane                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Access:**
+- ALB: `https://infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com/kiali/`
+- Local: `kubectl port-forward svc/kiali 20001:20001 -n istio-system` → http://localhost:20001/kiali
+
+**Demo Application (HotROD):**
+- Namespace: `demo` (Istio-enabled)
+- Access: `kubectl port-forward svc/hotrod 8080:8080 -n demo` → http://localhost:8080
+- Click buttons in HotROD UI to generate traffic visible in Kiali
+
+---
+
+## NIST Compliance
+
+| Control | Implementation |
+|---------|---------------|
+| NIST IA-2 | Cognito authentication for all services |
+| NIST AU-3 | Per-user K8s audit trail via EKS OIDC (Headlamp) |
+| NIST SC-8 | HTTPS/TLS 1.3 encryption via ALB |
+| NIST AC-2 | Cognito user/group management |
+| NIST AC-6 | RBAC with least privilege (developers=view, admins=cluster-admin) |
 
 ---
 
 ## AWS Console Links
 
-### Quick Links (replace ACCOUNT_ID)
-
 | Service | URL |
 |---------|-----|
-| EKS Clusters | `https://us-east-1.console.aws.amazon.com/eks/home?region=us-east-1#/clusters` |
-| CloudFormation | `https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks` |
-| VPC | `https://us-east-1.console.aws.amazon.com/vpc/home?region=us-east-1#vpcs:` |
-| RDS | `https://us-east-1.console.aws.amazon.com/rds/home?region=us-east-1#databases:` |
-| CloudWatch Logs | `https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups` |
+| EKS Clusters | https://us-east-1.console.aws.amazon.com/eks/home?region=us-east-1#/clusters |
+| CloudFormation | https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks |
+| Cognito User Pools | https://us-east-1.console.aws.amazon.com/cognito/v2/idp/user-pools?region=us-east-1 |
+| ALB | https://us-east-1.console.aws.amazon.com/ec2/home?region=us-east-1#LoadBalancers |
+| CloudWatch Logs | https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups |
 
 ---
 
 ## Troubleshooting
 
-### Cannot Access Grafana
-1. Check VPN connection
-2. Verify AWS SSO session is active
-3. Check if ALB is healthy: `aws elbv2 describe-target-health --target-group-arn <arn>`
+### Cannot Access via ALB
+1. Check ALB target group health:
+   ```bash
+   aws elbv2 describe-target-health --target-group-arn <arn> --region us-east-1
+   ```
+2. Verify nodes are registered as targets
+3. Check security group allows ALB → NodePort traffic
 
-### Cannot Connect to EKS
-1. Update kubeconfig: `aws eks update-kubeconfig --name infra-agent-dev-cluster`
-2. Verify IAM permissions
-3. Check if using VPN/bastion for private endpoint access
+### Headlamp OIDC Login Fails
+1. Verify user exists in Cognito user pool
+2. Check user is in `platform-admins` group for admin access
+3. Clear browser cookies and retry
+4. Check Headlamp pod logs:
+   ```bash
+   kubectl logs -l app.kubernetes.io/name=headlamp -n headlamp
+   ```
 
-### Chat Agent Not Responding
-1. Check Bedrock service status
-2. Verify AWS credentials: `aws sts get-caller-identity`
-3. Check agent logs: `kubectl logs -l app=chat-agent -n infra-agent`
+### Kubecost Shows No Data
+1. Wait 25+ minutes after initial deployment
+2. Check Kubecost pod status:
+   ```bash
+   kubectl get pods -n kubecost
+   ```
+3. Verify metrics collection:
+   ```bash
+   kubectl logs -l app=cost-analyzer -n kubecost
+   ```
+
+### SSM Tunnel Connection Failed
+1. Verify bastion instance is running:
+   ```bash
+   aws ec2 describe-instances --instance-ids i-02c424847cd5f557e --query 'Reservations[0].Instances[0].State.Name'
+   ```
+2. Check SSM agent status (may take 1-2 min after instance start)
+3. Verify IAM permissions for SSM
 
 ---
 
-## Contact & Support
+## Key Resources
 
-| Issue Type | Contact |
-|------------|---------|
-| Infrastructure | infrastructure-team@company.com |
-| Security | security-team@company.com |
-| Access Issues | access-team@company.com |
+| Resource | ID/Name |
+|----------|---------|
+| EKS Cluster | `infra-agent-dev-cluster` |
+| Bastion Instance | `i-02c424847cd5f557e` |
+| ALB DNS | `infra-agent-dev-obs-alb-1650635651.us-east-1.elb.amazonaws.com` |
+| Cognito User Pool | `us-east-1_49eiiC4Ew` |
+| Region | `us-east-1` |

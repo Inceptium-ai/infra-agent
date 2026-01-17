@@ -1,0 +1,127 @@
+# HotROD Demo Application - Distributed Tracing Test
+#
+# HotROD simulates a ride-sharing service with 4 microservices:
+# - Frontend (UI + API gateway)
+# - Customer service
+# - Driver service
+# - Route service
+#
+# Traces are sent to SigNoz OTel Collector via OTLP HTTP (port 4318)
+# Istio sidecar enabled for mTLS and Kiali traffic visualization
+#
+# Deploy: kubectl apply -f hotrod-deployment.yaml
+# Access: kubectl port-forward svc/hotrod 8080:8080 -n demo
+#         Open http://localhost:8080
+#
+# Generate traffic: Click buttons in the UI to request rides
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hotrod
+  namespace: demo
+  labels:
+    app: hotrod
+    app.kubernetes.io/name: hotrod
+    app.kubernetes.io/component: demo
+    app.kubernetes.io/managed-by: infra-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hotrod
+  template:
+    metadata:
+      labels:
+        app: hotrod
+        app.kubernetes.io/name: hotrod
+        version: v1
+      annotations:
+        # Enable Istio sidecar for mTLS and Kiali traffic visualization
+        # OTLP uses HTTP/protobuf (port 4318) which works through Envoy
+        sidecar.istio.io/inject: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      # Security context - NIST AC-6 (Least Privilege)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: hotrod
+          # Official Jaeger HotROD demo image with OTLP support
+          image: jaegertracing/example-hotrod:1.62.0
+          imagePullPolicy: IfNotPresent
+          # Container security context - NIST AC-6, SC-4
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+            - containerPort: 8083
+              name: customer
+              protocol: TCP
+            - containerPort: 8081
+              name: driver
+              protocol: TCP
+            - containerPort: 8082
+              name: route
+              protocol: TCP
+          env:
+            # Send traces to SigNoz OTel Collector via HTTP
+            # Note: GRPC (4317) has issues with Istio, HTTP (4318) works
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
+            # Use HTTP protocol (works reliably with Istio mTLS)
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
+            # Service name for traces
+            - name: OTEL_SERVICE_NAME
+              value: "hotrod"
+            # Resource attributes
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=demo,deployment.environment=dev"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hotrod
+  namespace: demo
+  labels:
+    app: hotrod
+    app.kubernetes.io/name: hotrod
+    app.kubernetes.io/managed-by: infra-agent
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: hotrod

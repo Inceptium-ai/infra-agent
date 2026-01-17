@@ -1,7 +1,10 @@
 # Trivy Namespace
 # NIST CM-3: Configuration Change Control (IaC managed)
-# NIST SC-8: Transmission Confidentiality (Istio mTLS)
 # NIST RA-5: Vulnerability Scanning
+#
+# NOTE: Istio injection DISABLED for trivy-system
+# Trivy scan jobs create pods with init containers that conflict with
+# Istio's istio-init container (duplicate name error)
 #
 # Deploy: kubectl apply -f infra/helm/values/trivy/namespace.yaml
 ---
@@ -10,6 +13,7 @@ kind: Namespace
 metadata:
   name: trivy-system
   labels:
-    istio-injection: enabled
+    # Disabled - conflicts with Trivy scan job init containers
+    istio-injection: disabled
     app.kubernetes.io/name: trivy
     app.kubernetes.io/part-of: security

@@ -123,6 +123,23 @@ schedules:
       includeClusterResources: true
       storageLocation: default
 
+  # SigNoz observability platform backup (high frequency)
+  # CRITICAL: Ensures rapid recovery of observability stack
+  # See: docs/lessons-learned.md #53 - StatefulSet PV AZ-Binding Incident
+  signoz-backup:
+    disabled: false
+    schedule: "0 */6 * * *"  # Every 6 hours
+    template:
+      ttl: 168h  # 7 days retention
+      includedNamespaces:
+        - signoz
+      includeClusterResources: false
+      storageLocation: default
+      # Snapshot PVCs for faster recovery
+      snapshotVolumes: true
+      # Include all PV data
+      defaultVolumesToFsBackup: true
+
   # Cross-region DR backup (disabled - no DR bucket configured)
   # dr-backup:
   #   disabled: false

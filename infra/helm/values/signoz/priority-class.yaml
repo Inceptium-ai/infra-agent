@@ -1,0 +1,31 @@
+# PriorityClass for Stateful Critical Workloads
+# NIST CP-9: System Backup - Ensures stateful workloads schedule first
+# NIST CP-10: System Recovery - Enables faster recovery after node restart
+#
+# WHY: Prevents scheduling failures when StatefulSets have PVs bound to specific AZs
+# After cluster restart, Deployments filled nodes first, leaving no capacity for
+# StatefulSets with AZ-bound PVs. This PriorityClass ensures StatefulSets schedule first.
+#
+# See: docs/lessons-learned.md #53 - StatefulSet PV AZ-Binding Incident
+#
+# Deploy with: kubectl apply -f priority-class.yaml
+# Or add to Helm deployment pipeline
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: stateful-critical
+  labels:
+    app.kubernetes.io/managed-by: infra-agent
+    nist-control: CP-9_CP-10
+description: |
+  Critical priority for stateful workloads (ClickHouse, ZooKeeper, databases).
+  Ensures these pods schedule before Deployments to avoid AZ-binding conflicts.
+# Value must be between -2147483648 and 1000000000
+# Higher value = higher priority
+# System components use 2000000000 (system-cluster-critical) and 2000001000 (system-node-critical)
+value: 1000000
+# Don't preempt other stateful-critical pods
+preemptionPolicy: PreemptLowerPriority
+# Don't make this the global default
+globalDefault: false

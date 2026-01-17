@@ -6,9 +6,10 @@ This document outlines the security architecture for the AI Infrastructure Agent
 
 **Key Security Features:**
 - Zero Trust network architecture with non-routable pod subnets (100.64.x.x)
-- Centralized SSO via Keycloak (OIDC) for all UI components
+- Centralized SSO via AWS Cognito (OIDC) with ALB authentication
 - mTLS encryption via Istio service mesh
-- IaC validation via cfn-lint and cfn-guard (policy-as-code)
+- IaC validation via cfn-lint and cfn-guard (CloudFormation policy-as-code)
+- Helm chart validation via kube-linter and kubeconform (Kubernetes policy-as-code)
 - Continuous vulnerability scanning via Trivy Operator
 - KMS encryption at rest for secrets, databases, and storage
 
@@ -20,22 +21,22 @@ This document outlines the security architecture for the AI Infrastructure Agent
 
 | Control | Description | Implementation | Status |
 |---------|-------------|----------------|--------|
-| **AC-2** | Account Management | Keycloak centralized user management, IRSA for pods | Implemented |
-| **AC-3** | Access Enforcement | Kubernetes RBAC, Keycloak roles/groups | Implemented |
+| **AC-2** | Account Management | AWS Cognito centralized user management, IRSA for pods | Implemented |
+| **AC-3** | Access Enforcement | Kubernetes RBAC, Cognito groups mapped to K8s roles | Implemented |
 | **AC-6** | Least Privilege | IRSA scoped IAM policies, no wildcard permissions | Implemented |
-| **AC-7** | Unsuccessful Login Attempts | Keycloak brute-force protection | Implemented |
+| **AC-7** | Unsuccessful Login Attempts | Cognito advanced security features | Implemented |
 | **AC-14** | Permitted Actions Without Identification | Disabled - all access requires authentication | Implemented |
 
 ### Audit and Accountability (AU)
 
 | Control | Description | Implementation | Status |
 |---------|-------------|----------------|--------|
-| **AU-2** | Audit Events | VPC Flow Logs, CloudWatch, Loki, EKS control plane logs | Implemented |
+| **AU-2** | Audit Events | VPC Flow Logs, CloudWatch, SigNoz, EKS control plane logs | Implemented |
 | **AU-3** | Content of Audit Records | Flow logs capture source/dest IP, ports, protocol, action | Implemented |
-| **AU-6** | Audit Review | Grafana dashboards for log/metric visualization | Implemented |
-| **AU-9** | Protection of Audit Information | Kafka WAL for Mimir, S3 versioning | Implemented |
-| **AU-11** | Audit Record Retention | 90-day Loki retention, S3 lifecycle policies | Implemented |
-| **AU-12** | Audit Generation | Promtail log collection, Istio access logs | Implemented |
+| **AU-6** | Audit Review | SigNoz dashboards for log/metric/trace visualization, Kiali for traffic | Implemented |
+| **AU-9** | Protection of Audit Information | ClickHouse persistence, S3 versioning | Implemented |
+| **AU-11** | Audit Record Retention | 90-day SigNoz retention, S3 lifecycle policies | Implemented |
+| **AU-12** | Audit Generation | OTel Collector log collection, Istio access logs | Implemented |
 
 ### Configuration Management (CM)
 
@@ -57,9 +58,9 @@ This document outlines the security architecture for the AI Infrastructure Agent
 
 | Control | Description | Implementation | Status |
 |---------|-------------|----------------|--------|
-| **IA-2** | User Identification | Keycloak OIDC for all UI components | Implemented |
-| **IA-5** | Authenticator Management | Keycloak password policies, MFA support | Implemented |
-| **IA-8** | Identification of Non-Organizational Users | Keycloak identity brokering | Planned |
+| **IA-2** | User Identification | AWS Cognito OIDC via ALB for all UI components | Implemented |
+| **IA-5** | Authenticator Management | Cognito password policies, MFA support | Implemented |
+| **IA-8** | Identification of Non-Organizational Users | Cognito identity federation (social/SAML) | Planned |
 
 ### Risk Assessment (RA)
 
@@ -80,83 +81,97 @@ This document outlines the security architecture for the AI Infrastructure Agent
 | Control | Description | Implementation | Status |
 |---------|-------------|----------------|--------|
 | **SI-2** | Flaw Remediation | Trivy scanning, patching via Helm upgrades | Implemented |
-| **SI-4** | System Monitoring | Prometheus/Mimir metrics, Grafana dashboards | Implemented |
+| **SI-4** | System Monitoring | SigNoz metrics/logs/traces, Kiali traffic visualization | Implemented |
 
 ---
 
-## Authentication Architecture (Keycloak)
+## Authentication Architecture (AWS Cognito)
 
 ### Overview
 
-Keycloak provides centralized Single Sign-On (SSO) for all UI components using the OpenID Connect (OIDC) protocol.
+AWS Cognito provides centralized Single Sign-On (SSO) for all UI components via ALB authentication and OIDC.
 
 ```
                     ┌─────────────────────────────────────────┐
-                    │              KEYCLOAK                    │
+                    │            AWS COGNITO                   │
                     │         (Identity Provider)              │
                     │                                          │
-                    │  Realm: infra-agent                      │
-                    │  Clients:                                │
-                    │    - grafana                             │
-                    │    - headlamp                            │
-                    │    - kiali                               │
-                    │    - kubecost                            │
+                    │  User Pool: infra-agent-dev              │
+                    │  App Client: observability-alb           │
                     │                                          │
-                    │  User Federation:                        │
-                    │    - Local users                         │
-                    │    - LDAP/AD (optional)                  │
+                    │  Groups:                                 │
+                    │    - platform-admins → cluster-admin     │
+                    │    - developers → view                   │
+                    │                                          │
                     └─────────────────┬───────────────────────┘
+                                      │
+                              ┌───────▼───────┐
+                              │  ALB + HTTPS  │
+                              │  (Cognito     │
+                              │   Auth)       │
+                              └───────┬───────┘
                                       │
               ┌───────────────────────┼───────────────────────┐
               │                       │                       │
               ▼                       ▼                       ▼
         ┌───────────┐          ┌───────────┐          ┌───────────┐
-        │  Grafana  │          │ Headlamp  │          │   Kiali   │
-        │  (OIDC)   │          │  (OIDC)   │          │  (OIDC)   │
+        │  SigNoz   │          │ Headlamp  │          │   Kiali   │
+        │ (ALB Auth)│          │(EKS OIDC) │          │ (ALB Auth)│
         └───────────┘          └───────────┘          └───────────┘
 ```
 
-### OIDC Client Configuration
+### Authentication Methods
 
-| Client | Client ID | Redirect URI | Access Type |
-|--------|-----------|--------------|-------------|
-| Grafana | `grafana` | `/login/generic_oauth` | Confidential |
-| Headlamp | `headlamp` | `/oidc-callback` | Confidential |
-| Kiali | `kiali` | `/api/auth/callback` | Confidential |
-| Kubecost | `kubecost` | `/model/oidc/callback` | Confidential |
+| Service | Auth Method | Per-User Audit |
+|---------|-------------|----------------|
+| SigNoz | ALB Cognito | No (shared) |
+| Headlamp | OIDC → EKS OIDC | **Yes** (K8s audit logs) |
+| Kubecost | ALB Cognito | No (shared) |
+| Kiali | ALB Cognito | No (shared) |
 
-### User Roles
+### Cognito Groups → Kubernetes RBAC
 
-| Role | Description | Services |
-|------|-------------|----------|
-| `admin` | Full administrative access | All services |
-| `operator` | Operational access (view + limited actions) | Grafana, Headlamp, Kiali |
-| `viewer` | Read-only access to dashboards | Grafana |
+| Cognito Group | K8s ClusterRole | Description |
+|---------------|-----------------|-------------|
+| `platform-admins` | cluster-admin | Full cluster access |
+| `developers` | view | Read-only access |
 
-### Database Backend
+### ALB Path-Based Routing
 
-| Environment | Database | Instance Class | Multi-AZ |
-|-------------|----------|----------------|----------|
-| DEV | RDS PostgreSQL 17.7 | db.t4g.micro | No |
-| TST | RDS PostgreSQL 17.7 | db.t4g.small | No |
-| PRD | RDS PostgreSQL 17.7 | db.r6g.large | Yes |
+| Path | Service | NodePort | Auth |
+|------|---------|----------|------|
+| `/` (default) | SigNoz | 30301 | ALB Cognito |
+| `/headlamp/*` | Headlamp | 30446 | EKS OIDC |
+| `/kubecost/*` | Kubecost | 30091 | ALB Cognito |
+| `/kiali/*` | Kiali | 30520 | ALB Cognito |
 
 ---
 
 ## IaC Security Validation
 
+**PRINCIPLE: All IaC must pass linting and policy validation before deployment.**
+
 ### Validation Pipeline
 
-All CloudFormation templates must pass validation before deployment:
-
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Developer     │────►│   cfn-lint      │────►│   cfn-guard     │────►│   Deploy        │
-│   Commit        │     │   (Syntax)      │     │   (NIST Rules)  │     │   Change Set    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        CLOUDFORMATION (AWS Resources)                            │
+├─────────────────┬─────────────────┬─────────────────┬─────────────────┐         │
+│   Developer     │   cfn-lint      │   cfn-guard     │   Deploy        │         │
+│   Commit        │   (Syntax)      │   (NIST Rules)  │   Change Set    │         │
+└─────────────────┴─────────────────┴─────────────────┴─────────────────┘         │
+                                                                                   │
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        HELM CHARTS (Kubernetes Resources)                        │
+├─────────────────┬─────────────────┬─────────────────┬─────────────────┐         │
+│   Developer     │   kubeconform   │   kube-linter   │   helm upgrade  │         │
+│   Commit        │   (Schema)      │   (Security)    │   --install     │         │
+└─────────────────┴─────────────────┴─────────────────┴─────────────────┘         │
 ```
 
-### cfn-lint
+### CloudFormation Validation
+
+#### cfn-lint (Syntax & Best Practices)
 
 Validates CloudFormation templates for:
 - Syntax errors
@@ -164,12 +179,15 @@ Validates CloudFormation templates for:
 - Best practices
 - Deprecated features
 
-**Usage:**
 ```bash
+# Activate virtual environment (Python 3.13+)
+source .venv/bin/activate
+
+# Lint all CloudFormation templates
 cfn-lint infra/cloudformation/stacks/**/*.yaml
 ```
 
-### cfn-guard (NIST Policy-as-Code)
+#### cfn-guard (NIST Policy-as-Code)
 
 Enforces NIST 800-53 compliance rules before deployment.
 
@@ -196,23 +214,76 @@ rule vpc_mandatory_tags {
         Properties.Tags EXISTS
     }
 }
-
-# AC-6: No wildcard IAM resources
-rule iam_no_wildcard {
-    AWS::IAM::Role {
-        when Properties.Policies EXISTS {
-            Properties.Policies[*].PolicyDocument.Statement[*].Resource != "*"
-        }
-    }
-}
 ```
 
-**Usage:**
 ```bash
+# Validate against NIST rules
 cfn-guard validate \
-  -r infra/cloudformation/cfn-guard-rules/nist-800-53/phase1-controls.guard \
-  -d infra/cloudformation/stacks/**/*.yaml
+  --data infra/cloudformation/stacks/ \
+  --rules infra/cloudformation/cfn-guard-rules/nist-800-53/ \
+  --show-summary all
 ```
+
+### Helm Chart Validation
+
+#### kubeconform (Schema Validation)
+
+Validates Kubernetes manifests against OpenAPI schemas:
+- Correct resource kinds and API versions
+- Valid property names and types
+- Required fields present
+
+```bash
+# Validate Helm values that contain K8s manifests
+kubeconform -summary infra/helm/values/demo/
+
+# Validate templated Helm chart
+helm template <release> <chart> -f values.yaml | kubeconform -summary
+```
+
+#### kube-linter (Security Best Practices)
+
+Checks Kubernetes manifests for security misconfigurations:
+- **AC-6 (Least Privilege):** runAsNonRoot, drop ALL capabilities
+- **SC-4 (Information Remnants):** readOnlyRootFilesystem
+- Resource limits set (prevent DoS)
+- No privileged containers
+- No host namespace sharing
+
+```bash
+# Lint Helm values containing K8s manifests
+kube-linter lint infra/helm/values/demo/
+
+# Lint templated Helm chart
+helm template <release> <chart> -f values.yaml | kube-linter lint -
+```
+
+**Required Security Context (NIST AC-6, SC-4):**
+
+```yaml
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+  containers:
+    - name: app
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+```
+
+### Validation Requirements
+
+| IaC Type | Tool | Must Pass | Blocks Deploy |
+|----------|------|-----------|---------------|
+| CloudFormation | cfn-lint | 0 errors | Yes |
+| CloudFormation | cfn-guard | 0 FAIL | Yes |
+| Helm/K8s manifests | kubeconform | 0 invalid | Yes |
+| Helm/K8s manifests | kube-linter | 0 errors | Yes |
 
 ---
 
@@ -315,9 +386,8 @@ Continuous in-cluster vulnerability scanning for:
 
 | Secret | Purpose | Rotation |
 |--------|---------|----------|
-| Keycloak DB credentials | RDS PostgreSQL access | 30 days |
-| Grafana admin password | Initial admin setup | Manual |
-| OIDC client secrets | Keycloak client authentication | Manual |
+| Cognito client secrets | ALB authentication | Manual |
+| SigNoz ClickHouse password | Database access | Manual |
 
 ### Kubernetes Secrets
 
@@ -427,3 +497,4 @@ kubectl get nodes
 | 1.0 | 2025-01-11 | AI Agent | Initial security documentation |
 | 1.1 | 2025-01-11 | AI Agent | Added Keycloak authentication architecture |
 | 1.2 | 2025-01-11 | AI Agent | Added IaC validation (cfn-lint, cfn-guard) section |
+| 2.0 | 2026-01-17 | AI Agent | Replaced Keycloak with AWS Cognito, added Helm validation (kube-linter, kubeconform), updated to SigNoz observability |

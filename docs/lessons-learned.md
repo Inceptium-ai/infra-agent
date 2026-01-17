@@ -1570,9 +1570,11 @@ Run both cfn-lint (syntax) and cfn-guard (compliance) on ALL CloudFormation chan
 
 ---
 
-## 45. Keycloak for Centralized SSO Authentication
+## 45. ~~Keycloak for Centralized SSO Authentication~~ (SUPERSEDED)
 
-**Issue:**
+> **SUPERSEDED:** This lesson was replaced by Lesson #46 (AWS Cognito). Keycloak IaC has been removed from the codebase. Use AWS Cognito for authentication.
+
+**Original Issue (Historical):**
 Multiple observability tools (Grafana, Headlamp, Kiali, Kubecost) each had separate authentication:
 - Grafana: admin password
 - Headlamp: service account token
@@ -1846,3 +1848,378 @@ podAnnotations:
 
 **Lesson:**
 Istio version must be compatible with Kubernetes version. When using K8s 1.28+ native sidecars feature, ensure Istio supports it.
+
+---
+
+## 53. StatefulSet PV AZ-Binding Causes Scheduling Failures After Node Restart - CRITICAL
+
+**Incident Date:** 2026-01-15
+
+**Incident:**
+After cluster restart (nodes scaled to 0, then back up), SigNoz pods stuck in Pending for 20+ hours, ultimately requiring full data loss to recover.
+
+**Root Cause Chain:**
+```
+1. SigNoz deployed → PVs (EBS volumes) created in us-east-1b
+2. Cluster shutdown (nodes scaled to 0)
+3. Cluster restart → new nodes created in 3 AZs (us-east-1a, 1b, 1c)
+4. Deployments scheduled first → filled us-east-1b node to 98% CPU
+5. StatefulSets tried to schedule LAST → us-east-1b node was FULL
+6. EBS volumes are AZ-bound → pods CANNOT move to other AZs
+7. Force-deleting stuck pod → ClickHouse operator deleted entire CHI
+8. Result: Complete data loss, full reinstall required
+```
+
+**Why EBS Volumes Are AZ-Bound:**
+EBS volumes are physical storage in a specific Availability Zone. They can ONLY be attached to EC2 instances in the same AZ. This is an AWS limitation, not a Kubernetes issue.
+
+**Why This Is Unacceptable:**
+- StatefulSets contain persistent data (ClickHouse database)
+- Resource contention should NOT cause data loss
+- Operator cleanup behavior is dangerous when triggered incorrectly
+- No visibility into the issue until manual investigation
+
+**Impact:**
+- SigNoz (observability) DOWN for 20+ hours
+- All metrics, logs, traces data LOST
+- Required complete reinstall
+- 12 orphaned LGTM PVCs discovered and cleaned up
+
+**Prevention Design (MUST IMPLEMENT FOR PRODUCTION):**
+
+### 1. Multi-AZ StatefulSets
+Spread PVs across AZs so not all data is in one AZ:
+```yaml
+# In Helm values
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: signoz
+```
+
+### 2. PriorityClasses for StatefulSets
+Ensure StatefulSets schedule BEFORE Deployments:
+```yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: stateful-critical
+value: 1000000
+globalDefault: false
+description: "Critical stateful workloads (databases)"
+---
+# In StatefulSet spec:
+spec:
+  template:
+    spec:
+      priorityClassName: stateful-critical
+```
+
+### 3. Resource Reservations
+Reserve headroom on each node:
+```yaml
+# In node-groups.yaml - ensure buffer capacity
+GeneralNodeMinSize: 3  # Minimum 3 nodes, not 1 or 2
+GeneralNodeDesiredSize: 3
+```
+
+### 4. Graceful Shutdown Procedure
+```bash
+# BEFORE scaling nodes to 0:
+
+# 1. Cordon nodes (prevent new scheduling)
+kubectl cordon --all
+
+# 2. Scale down StatefulSets gracefully
+kubectl scale statefulset --all -n signoz --replicas=0
+
+# 3. Wait for PVs to detach (check EBS console)
+aws ec2 describe-volumes --filters "Name=tag:kubernetes.io/created-for/pvc/namespace,Values=signoz"
+
+# 4. Then scale nodes to 0
+aws eks update-nodegroup-config --scaling-config desiredSize=0 ...
+```
+
+### 5. NEVER Force-Delete StatefulSet Pods
+```bash
+# WRONG - triggers operator cleanup cascade!
+kubectl delete pod clickhouse-0 --force --grace-period=0
+
+# RIGHT - investigate root cause first
+kubectl describe pod clickhouse-0
+kubectl logs clickhouse-0
+kubectl get events --sort-by='.lastTimestamp'
+```
+
+### 6. Velero Backup Schedule
+```yaml
+# Schedule daily backups for stateful namespaces
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: signoz-daily
+spec:
+  schedule: "0 2 * * *"
+  template:
+    includedNamespaces:
+      - signoz
+    includedResources:
+      - persistentvolumeclaims
+      - persistentvolumes
+    snapshotVolumes: true
+```
+
+### 7. Node Autoscaling with Buffer
+```yaml
+# Ensure cluster can scale to meet demand
+GeneralNodeMinSize: 3
+GeneralNodeMaxSize: 10
+GeneralNodeDesiredSize: 3
+```
+
+**IaC Changes Required:**
+- [ ] Add PriorityClass to `infra/helm/values/signoz/values.yaml`
+- [ ] Add topologySpreadConstraints for multi-AZ
+- [ ] Update node-groups.yaml minSize to 3
+- [ ] Create `scripts/graceful-shutdown.sh`
+- [ ] Configure Velero backup schedule for signoz namespace
+- [ ] Document RTO/RPO requirements
+
+**Detection:**
+```bash
+# Check if StatefulSet pods are stuck
+kubectl get pods -A | grep -E "Pending|Init"
+
+# Check PV AZ bindings
+kubectl get pv -o custom-columns='NAME:.metadata.name,AZ:.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]'
+
+# Check node capacity
+kubectl describe nodes | grep -A 6 "Allocated resources"
+```
+
+**Lesson:**
+StatefulSets with EBS-backed PVCs are vulnerable to AZ-specific resource constraints. After node restarts, if the AZ with PVs has insufficient resources, pods cannot schedule and data is at risk. Implement multi-AZ StatefulSets, PriorityClasses, and proper shutdown procedures to prevent this.
+
+---
+
+## 54. Orphaned PVCs After Stack Migration
+
+**Issue:**
+After migrating from LGTM stack (Grafana, Loki, Tempo, Mimir, Prometheus) to SigNoz, 12 PVCs were left orphaned in the `observability` namespace.
+
+**Root Cause:**
+Helm uninstall does not delete PVCs by default (to protect data). When Helm releases were deleted, the PVCs remained.
+
+**Impact:**
+- 12 EBS volumes (~200GB) wasting storage costs
+- Orphaned PVs tied up AZ capacity
+- Confusion during troubleshooting
+
+**Detection:**
+```bash
+# Find PVCs not associated with running workloads
+kubectl get pvc -A --no-headers | while read ns name rest; do
+  pod_count=$(kubectl get pods -n $ns -o json 2>/dev/null | jq --arg pvc "$name" '[.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $pvc)] | length')
+  if [ "$pod_count" == "0" ]; then
+    echo "ORPHANED: $ns/$name"
+  fi
+done
+```
+
+**Cleanup:**
+```bash
+# Delete all PVCs in orphaned namespace
+kubectl delete pvc --all -n observability
+
+# Delete empty namespace
+kubectl delete namespace observability
+```
+
+**Prevention:**
+When decommissioning a stack:
+1. Document all PVCs that will be orphaned
+2. Backup data if needed (Velero snapshot)
+3. Explicitly delete PVCs after Helm uninstall
+4. Delete empty namespaces
+
+**Lesson:**
+Always clean up PVCs after removing Helm releases. Add PVC cleanup to decommissioning checklists.
+
+
+---
+
+## 55. Trivy Scan Jobs Fail with Istio Injection (2026-01-15)
+
+**Issue:** Trivy vulnerability scan jobs fail with error: `spec.initContainers[0].name: Duplicate value: "istio-init"`
+
+**Root Cause:** 
+- Trivy operator creates scan Job pods with their own init containers
+- One of Trivy's init containers is named `istio-init`
+- When Istio injection is enabled, Istio also adds an `istio-init` container
+- Kubernetes rejects pods with duplicate container names
+
+**Impact:**
+- All vulnerability scans fail
+- Jobs hit BackoffLimitExceeded and DeadlineExceeded
+- No vulnerability reports generated
+
+**Solution:**
+Disable Istio injection for the trivy-system namespace:
+```bash
+kubectl label namespace trivy-system istio-injection=disabled --overwrite
+```
+
+**IaC Fix:**
+Updated `infra/helm/values/trivy/namespace.yaml`:
+```yaml
+metadata:
+  labels:
+    istio-injection: disabled  # Conflicts with Trivy scan job init containers
+```
+
+**Prevention:**
+- Before enabling Istio injection for a namespace, check if any workloads use init containers named `istio-init`
+- Some operators/tools may use this name internally
+- Document Istio-incompatible namespaces in architecture docs
+
+---
+
+## 56. OTLP GRPC Fails Through Istio - Use HTTP Instead (2026-01-15)
+
+**Issue:** HotROD demo app traces failed to export to SigNoz OTel Collector with error:
+```
+traces export: context deadline exceeded: retry-able request failure: 
+upstream connect error or disconnect/reset before headers. 
+reset reason: protocol error
+```
+
+**Root Cause:**
+- OTLP GRPC (port 4317) doesn't work reliably through Istio Envoy proxy
+- Even with `traffic.sidecar.istio.io/excludeOutboundPorts: "4317"` annotation, the issue persisted
+- The Envoy proxy has issues with H2 (HTTP/2) protocol handling for some GRPC services
+
+**Solution:**
+Switch from GRPC to HTTP/protobuf for OTLP trace export:
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"  # HTTP, not 4317
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: "http/protobuf"  # Not "grpc"
+```
+
+**Verification:**
+```bash
+# Test HTTP endpoint works through Istio
+kubectl run -n <namespace> --rm -i --restart=Never --image=curlimages/curl test -- \
+  curl -X POST "http://signoz-otel-collector.signoz.svc.cluster.local:4318/v1/traces" \
+  -H "Content-Type: application/json" -d '{}'
+# Should return: {"partialSuccess":{}}
+```
+
+**Prevention:**
+- Default to HTTP/protobuf (port 4318) for OTLP in Istio-enabled clusters
+- Only use GRPC (port 4317) if source and destination are both outside Istio mesh
+- Document this in onboarding guides for new services
+
+**Lesson:**
+When running in an Istio service mesh, prefer OTLP HTTP (4318) over GRPC (4317) for trace export. The HTTP protocol works reliably through Envoy sidecars while GRPC has protocol-level issues.
+
+---
+
+## 57. Demo Namespaces CAN Use Istio with HTTP OTLP (2026-01-17 - UPDATED)
+
+**Original Issue (2026-01-15):** Initially disabled Istio for demo namespace due to OTLP/Envoy conflicts.
+
+**Resolution (2026-01-17):** Re-enabled Istio for demo namespace because:
+1. OTLP HTTP/protobuf (port 4318) works reliably through Istio Envoy
+2. Istio enables Kiali traffic visualization for demos
+3. mTLS provides realistic production-like environment
+
+**Current Configuration:**
+```yaml
+# infra/helm/values/demo/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio-injection: enabled  # ENABLED for Kiali visualization
+    purpose: tracing-demo
+```
+
+```yaml
+# infra/helm/values/demo/hotrod-deployment.yaml
+metadata:
+  annotations:
+    sidecar.istio.io/inject: "true"
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"  # HTTP works!
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: "http/protobuf"
+```
+
+**Key Insight:**
+- OTLP GRPC (port 4317) fails through Istio Envoy
+- OTLP HTTP/protobuf (port 4318) works through Istio Envoy
+- If using HTTP, Istio injection is fine for demo apps
+
+**Namespaces That Should Disable Istio:**
+| Namespace | Reason |
+|-----------|--------|
+| `trivy-system` | Init container name conflict (`istio-init`) |
+| `velero` | Backup operations need direct access |
+
+**Note:** `demo` namespace now has Istio ENABLED for Kiali traffic visualization.
+
+**Lesson:**
+Don't assume Istio breaks OTLP. Only GRPC has issues; HTTP/protobuf works fine. Enable Istio for demo namespaces when you want Kiali traffic visualization.
+
+---
+
+## 58. Cleanup Checklist After Stack Migration (2026-01-15)
+
+**Issue:** After migrating from LGTM stack to SigNoz, multiple orphaned resources remained:
+- Kiali operator namespace and Helm release
+- Empty `identity` namespace
+- Deprecated scripts with old references
+- IaC files with stale configurations
+
+**Cleanup Checklist:**
+```markdown
+## Post-Migration Cleanup
+
+### Kubernetes Resources
+- [ ] Uninstall deprecated Helm releases: `helm uninstall <release> -n <namespace>`
+- [ ] Delete orphaned PVCs: `kubectl delete pvc --all -n <namespace>`
+- [ ] Delete empty namespaces: `kubectl delete namespace <name>`
+- [ ] Remove completed Jobs: `kubectl delete jobs --field-selector status.successful=1 -A`
+
+### IaC Updates
+- [ ] Update values files to remove old references
+- [ ] Move deprecated IaC to `deprecated/` folder
+- [ ] Update CLAUDE.md/README with new components
+- [ ] Update access-urls.md with new endpoints
+
+### Scripts
+- [ ] Archive scripts that reference old stack to `scripts/deprecated/`
+- [ ] Update any automation scripts
+- [ ] Test remaining scripts work with new stack
+
+### Documentation
+- [ ] Update architecture diagrams
+- [ ] Update lessons-learned.md
+- [ ] Update runbooks for new components
+```
+
+**Prevention:**
+- Create migration checklist BEFORE starting migration
+- Use IaC drift detection to find orphaned resources
+- Schedule cleanup tasks immediately after migration
+
+**Lesson:**
+Stack migrations leave debris. Create and follow a cleanup checklist to ensure all orphaned resources, IaC, scripts, and documentation are properly cleaned up.

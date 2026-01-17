@@ -261,6 +261,32 @@ securityContext:
       - ALL
 
 # ============================================================================
+# Priority Class (Ensures StatefulSets schedule before Deployments)
+# CRITICAL: Prevents scheduling failures after cluster restart
+# See: docs/lessons-learned.md #53 - StatefulSet PV AZ-Binding Incident
+# ============================================================================
+priorityClassName: stateful-critical
+
+# ============================================================================
+# Topology Spread Constraints (Multi-AZ distribution)
+# Ensures StatefulSet pods spread across availability zones
+# Prevents all PVs from being created in a single AZ
+# ============================================================================
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway  # DEV: soft constraint (2 nodes)
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: signoz
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: signoz
+
+# ============================================================================
 # Node placement
 # ============================================================================
 nodeSelector: {}
