@@ -27,6 +27,55 @@ This document defines all requirements for the AI-powered Infrastructure Agent s
 | FR-013 | System SHALL provide unified observability dashboard | Must | Implemented (SigNoz) |
 | FR-014 | System SHALL visualize service mesh traffic | Should | Implemented (Kiali) |
 | FR-015 | System SHALL support alerting on metrics thresholds | Should | Implemented (SigNoz) |
+| FR-016 | System SHALL provide IaC-managed observability dashboards | Must | Implemented |
+| FR-017 | System SHALL provide K8s operations dashboard replacing 80% of Headlamp usage | Should | Implemented |
+
+#### 1.2.1 Required Observability Dashboards
+
+Dashboards are managed as IaC in `infra/helm/values/signoz/dashboards/` and deployed via script.
+
+| Dashboard | File | Purpose | Panels |
+|-----------|------|---------|--------|
+| **K8s Operations** | `k8s-operations.json` | Comprehensive cluster ops (replaces Headlamp for monitoring) | 20 panels |
+| **Cluster Overview** | `kubernetes-cluster-metrics.json` | Simple cluster metrics overview | 4 panels |
+
+**K8s Operations Dashboard Sections:**
+
+| Section | Panels | Metrics Used |
+|---------|--------|--------------|
+| **Pod Status** | Pods by Namespace, Pod Phase Distribution (pie) | `k8s.pod.phase` |
+| **Workloads** | Deployments, StatefulSets, DaemonSets (available vs desired) | `k8s.deployment.*`, `k8s.statefulset.*`, `k8s.daemonset.*` |
+| **Container Health** | Container Restarts (top 15), Restart Trend | `k8s.container.restarts` |
+| **Storage** | PVC Capacity, PVC Available Space | `k8s.volume.capacity`, `k8s.volume.available` |
+| **Resources** | CPU/Memory Limit Utilization by Namespace | `k8s.pod.cpu_limit_utilization`, `k8s.pod.memory_limit_utilization` |
+| **Node Health** | Node Conditions (Ready, DiskPressure, MemoryPressure, PIDPressure) | `k8s.node.condition_*` |
+| **Jobs & HPA** | Job Status, HPA Status | `k8s.job.*`, `k8s.hpa.*` |
+
+**What K8s Operations Dashboard Replaces:**
+
+| Headlamp Feature | Dashboard Coverage |
+|------------------|-------------------|
+| Pod list/status | ✅ Pod Status section |
+| Deployment status | ✅ Workloads section |
+| StatefulSet status | ✅ Workloads section |
+| DaemonSet status | ✅ Workloads section |
+| Container restarts | ✅ Container Health section |
+| PVC usage | ✅ Storage section |
+| Resource usage | ✅ Resources section |
+| Node conditions | ✅ Node Health section |
+| Job status | ✅ Jobs & HPA section |
+| HPA status | ✅ Jobs & HPA section |
+| Create/Edit resources | ❌ Use kubectl |
+| Exec into pods | ❌ Use kubectl |
+| View/Edit YAML | ❌ Use kubectl |
+
+**Dashboard Persistence:**
+
+Dashboards are stored in SigNoz's ClickHouse database (EBS-backed PV) and survive normal restarts. However, if SigNoz requires reinstallation (e.g., PV AZ-binding issues), dashboards must be redeployed from IaC:
+
+```bash
+./scripts/deploy-signoz-dashboards.sh --delete-existing
+```
 
 ### 1.3 Security Scanning
 
@@ -315,7 +364,35 @@ EKS Managed Node Groups use AWS Auto Scaling Groups (ASG), which are designed fo
 
 **Never deploy without validation.**
 
-### 5.4 Access Methods
+### 5.4 Dashboard Deployment
+
+SigNoz dashboards are managed as IaC and deployed via script.
+
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| `scripts/deploy-signoz-dashboards.sh` | Deploy all dashboards from IaC | `./scripts/deploy-signoz-dashboards.sh` |
+| Same script with flag | Clean deploy (delete existing first) | `./scripts/deploy-signoz-dashboards.sh --delete-existing` |
+
+**Prerequisites:**
+- SSM tunnel running (`./scripts/tunnel.sh`)
+- `SIGNOZ_API_KEY` in `.env` file (create in SigNoz UI → Settings → API Keys)
+- `jq` installed (`brew install jq`)
+
+**Dashboard IaC Location:**
+```
+infra/helm/values/signoz/dashboards/
+├── k8s-operations.json           # Comprehensive K8s operations
+├── kubernetes-cluster-metrics.json  # Simple cluster overview
+└── README.md                     # Documentation
+```
+
+**When to Run:**
+- After fresh SigNoz installation
+- After SigNoz reinstallation (PV issues)
+- After adding new dashboard JSON files to the IaC directory
+- After cluster recovery from backup
+
+### 5.5 Access Methods
 
 | Service | Internet (ALB) | Local (port-forward) |
 |---------|----------------|---------------------|
@@ -364,3 +441,4 @@ EKS Managed Node Groups use AWS Auto Scaling Groups (ASG), which are designed fo
 |---------|------|--------|---------|
 | 1.0 | 2026-01-17 | AI Agent | Initial requirements document |
 | 1.1 | 2026-01-17 | AI Agent | Add EKS Node Lifecycle requirements (NFR-050 to NFR-053) |
+| 1.2 | 2026-01-18 | AI Agent | Add observability dashboard requirements (FR-016, FR-017), dashboard deployment script |

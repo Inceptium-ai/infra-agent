@@ -1,7 +1,9 @@
 # Velero Namespace
 # NIST CM-3: Configuration Change Control (IaC managed)
-# NIST SC-8: Transmission Confidentiality (Istio mTLS)
 # NIST CP-9: System Backup
+#
+# Istio disabled: Jobs (Kopia maintenance) don't work with sidecars -
+# sidecar keeps running after job completes, causing Error status
 #
 # Deploy: kubectl apply -f infra/helm/values/velero/namespace.yaml
 ---
@@ -10,6 +12,6 @@ kind: Namespace
 metadata:
   name: velero
   labels:
-    istio-injection: enabled
+    istio-injection: disabled
     app.kubernetes.io/name: velero
     app.kubernetes.io/part-of: operations

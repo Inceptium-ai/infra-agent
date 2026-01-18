@@ -141,10 +141,10 @@ clickhouse:
   resources:
     requests:
       cpu: 500m
-      memory: 1Gi
+      memory: 2Gi
     limits:
       cpu: 2000m
-      memory: 4Gi
+      memory: 6Gi  # Increased from 4Gi - ClickHouse needs headroom for aggregations
 
   # Persistence
   persistence:

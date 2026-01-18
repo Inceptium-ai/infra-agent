@@ -54,6 +54,12 @@ containerSecurityContext:
 
 # Backup storage configuration
 configuration:
+  # Environment variables for velero server and maintenance jobs
+  # HOME=/tmp needed because Kopia maintenance jobs run as user 65534
+  # whose home (/nonexistent) is not writable with readOnlyRootFilesystem
+  extraEnvVars:
+    - name: HOME
+      value: "/tmp"
   # Default backup storage location
   backupStorageLocation:
     - name: default

@@ -31,16 +31,16 @@ This includes:
 - With fewer than 3 nodes, StatefulSets may fail if their PV's AZ has no node
 - This caused complete data loss in the StatefulSet PV AZ-Binding Incident (2026-01-15)
 
-**ALWAYS use the graceful startup script:**
+**ALWAYS use the startup script:**
 ```bash
-/Users/ymuwakki/infra-agent/scripts/graceful-startup.sh
+/Users/ymuwakki/infra-agent/scripts/startup.sh
 ```
 
 **The script enforces minimum 3 nodes:**
 ```bash
-if [ "$NODE_COUNT" -lt 3 ]; then
-    log_warn "Requested $NODE_COUNT nodes, but minimum 3 required for multi-AZ. Using 3."
-    NODE_COUNT=3
+if [ "$REQUESTED_NODES" -lt "$MIN_NODES" ]; then
+    echo "WARNING: Requested $REQUESTED_NODES nodes, but minimum $MIN_NODES required for multi-AZ."
+    REQUESTED_NODES=$MIN_NODES
 fi
 ```
 
@@ -51,7 +51,7 @@ aws eks update-nodegroup-config ... --scaling-config desiredSize=1  # WRONG
 aws eks update-nodegroup-config ... --scaling-config desiredSize=2  # WRONG
 
 # DO THIS INSTEAD
-/Users/ymuwakki/infra-agent/scripts/graceful-startup.sh  # Enforces min 3
+/Users/ymuwakki/infra-agent/scripts/startup.sh  # Enforces min 3
 ```
 
 ---
@@ -155,30 +155,32 @@ User has bookmarks organized under **Bookmarks Bar → Genesis → Infra**:
 
 ## Compute Management
 
-### Shutdown all compute (save costs)
+### Shutdown (save costs)
 ```bash
-# Scale nodes to 0
-aws eks update-nodegroup-config \
-  --cluster-name infra-agent-dev-cluster \
-  --nodegroup-name infra-agent-dev-general-nodes \
-  --scaling-config minSize=0,maxSize=3,desiredSize=0 \
-  --region us-east-1
-
-# Stop bastion
-aws ec2 stop-instances --instance-ids i-02c424847cd5f557e --region us-east-1
+./scripts/shutdown.sh
 ```
 
-### Start compute (ALWAYS use graceful-startup.sh)
+### Startup (full procedure)
 ```bash
-# Use the graceful startup script - enforces minimum 3 nodes for multi-AZ
-/Users/ymuwakki/infra-agent/scripts/graceful-startup.sh
+# 1. Start compute (waits for bastion + SSM agent)
+./scripts/startup.sh
 
-# The script automatically:
-# 1. Starts the bastion instance
-# 2. Waits for SSM agent
-# 3. Scales nodes to 3 (minimum enforced for multi-AZ)
-# 4. Prints next steps for kubectl access
+# 2. Connect to cluster
+./scripts/tunnel.sh
+
+# 3. Clean up orphaned pods (required after restart)
+./scripts/cleanup-orphaned-pods.sh
 ```
+
+**What startup.sh does:**
+- Starts bastion and waits for it to be running
+- Waits for SSM agent to come online
+- Scales nodes to 3 (minimum enforced for multi-AZ)
+
+**What cleanup-orphaned-pods.sh does:**
+- Deletes pods stuck on terminated/NotReady nodes
+- Cleans up failed Velero Kopia maintenance jobs
+- Must run after every restart to clear orphaned DaemonSet pods
 
 **NEVER manually scale to fewer than 3 nodes** - see PRINCIPLE #2 above.
 
@@ -399,15 +401,228 @@ env:
 
 **Rule:** In Istio-enabled clusters, default to OTLP HTTP (4318) over GRPC (4317).
 
-### Namespaces That Should Disable Istio (Updated 2026-01-17)
+### Namespaces That Should Disable Istio (Updated 2026-01-18)
 
 | Namespace | Reason |
 |-----------|--------|
 | `trivy-system` | Init container name conflict (`istio-init`) |
-| `velero` | Backup operations need direct access |
+| `velero` | Jobs (Kopia maintenance) don't terminate with sidecars |
 | `kiali-operator` | Operator doesn't need mTLS |
 
 **Note:** `demo` namespace now has Istio ENABLED for Kiali traffic visualization. OTLP HTTP/protobuf (port 4318) works through Envoy.
+
+### Jobs and CronJobs Should Never Have Istio Sidecars (2026-01-18)
+
+**Issue:** Velero Kopia maintenance jobs stuck in Error status after cluster restart.
+
+**Root Cause:** Jobs with Istio sidecars don't terminate properly. The istio-proxy container keeps running after the main container completes, leaving pods in Error state forever.
+
+**Solution:** Disable Istio at namespace level for any namespace running Jobs/CronJobs:
+```yaml
+# namespace.yaml
+metadata:
+  labels:
+    istio-injection: disabled
+```
+
+Or disable per-pod if namespace needs Istio for other workloads:
+```yaml
+# In pod spec
+annotations:
+  sidecar.istio.io/inject: "false"
+```
+
+**Rule:** If a namespace runs batch Jobs or CronJobs, disable Istio injection for that namespace.
+
+### readOnlyRootFilesystem with Non-Root Users (2026-01-18)
+
+**Issue:** Velero Kopia jobs failed with `mkdir /nonexistent: read-only file system`
+
+**Root Cause:** User 65534 (nobody) has HOME=/nonexistent. With `readOnlyRootFilesystem: true`, applications can't write to HOME.
+
+**Solution:** Set HOME to a writable directory (usually /tmp which is an emptyDir):
+```yaml
+extraEnvVars:
+  - name: HOME
+    value: "/tmp"
+```
+
+**Rule:** When using `readOnlyRootFilesystem: true` with non-root users (65534, nobody), always set `HOME=/tmp`.
+
+### TargetGroupBindings for ALB Auto-Registration (2026-01-17)
+
+**Issue:** After cluster restart, ALB target groups had 0 healthy targets for Kiali.
+
+**Root Cause:** EKS nodes terminate and new ones launch. Without TargetGroupBinding CRDs, ALB targets must be manually re-registered.
+
+**Solution:** Every service behind ALB needs a TargetGroupBinding:
+```yaml
+# Example: infra/helm/values/kiali/targetgroupbinding.yaml
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kiali-tgb
+  namespace: istio-system
+spec:
+  serviceRef:
+    name: kiali
+    port: 20001
+  targetGroupARN: arn:aws:elasticloadbalancing:...
+  targetType: instance
+```
+
+**Files:**
+- `infra/helm/values/kiali/targetgroupbinding.yaml`
+- `infra/helm/values/signoz/targetgroupbinding.yaml`
+- `infra/helm/values/headlamp/targetgroupbinding.yaml`
+- `infra/helm/values/kubecost/targetgroupbinding.yaml`
+
+### EKS Nodes Terminate, Not Stop (By Design) (2026-01-17)
+
+EKS Managed Node Groups use AWS Auto Scaling Groups (ASG):
+- Scale down = **Terminate** (not stop)
+- Scale up = **Launch new** (not start)
+
+**This is correct behavior:**
+- Kubernetes nodes are "cattle, not pets"
+- Fresh nodes ensure clean state without drift
+- Bastion is the exception (stop/start to preserve state)
+
+**What IS preserved:** PersistentVolumes (EBS), K8s state (etcd), ConfigMaps, Secrets
+**What is NOT preserved:** Local storage (emptyDir), container image cache, in-memory state
+
+**See:** `docs/requirements.md` NFR-050 to NFR-053
+
+### Graceful Shutdown - Don't Scale Pods (2026-01-17)
+
+**Old (over-engineered):** Scale deployments to 0, then scale statefulsets to 0, then scale nodes to 0.
+
+**New (correct):** Just scale nodes to 0. Kubernetes handles pod eviction automatically.
+
+```bash
+# Shutdown - just scale nodes
+/Users/ymuwakki/infra-agent/scripts/shutdown.sh
+
+# Startup - scale nodes back up (minimum 3 for multi-AZ)
+/Users/ymuwakki/infra-agent/scripts/startup.sh
+```
+
+Pods auto-recover when nodes come back up because controllers (Deployment, StatefulSet, DaemonSet) recreate them.
+
+### DaemonSets Don't Need Istio Sidecars (2026-01-17)
+
+**Issue:** DaemonSet pods (otel-agent, velero node-agent) failed to schedule with "Insufficient CPU".
+
+**Root Cause:** Istio sidecar adds ~100m CPU per pod. DaemonSets run on every node.
+
+**Solution:** Disable sidecar injection for infrastructure DaemonSets:
+```yaml
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+```
+
+**Files updated:**
+- `infra/helm/values/signoz/k8s-infra-values.yaml` (otel-agent)
+- `infra/helm/values/velero/values.yaml` (node-agent)
+
+### Kiali Requires Prometheus (Not Part of Istio) (2026-01-17)
+
+**Clarification:** Kiali and Prometheus are NOT part of Istio. They are separate CNCF projects that integrate with Istio.
+
+**Issue:** After SigNoz migration, Kiali traffic graph failed because SigNoz doesn't provide Prometheus-compatible API.
+
+**Solution:** Deploy minimal Prometheus specifically for Kiali:
+```yaml
+# infra/helm/values/prometheus-kiali/values.yaml
+server:
+  retention: "2h"
+  persistentVolume:
+    enabled: false  # Ephemeral - Kiali only needs recent data
+```
+
+Configure Kiali to use it:
+```yaml
+external_services:
+  prometheus:
+    url: "http://prometheus-kiali-server.prometheus-kiali.svc.cluster.local"
+```
+
+### SigNoz Dashboards (2026-01-18)
+
+**Use official SigNoz dashboards** from https://github.com/SigNoz/dashboards - custom dashboards are error-prone.
+
+```
+infra/helm/values/signoz/dashboards/
+├── kubernetes-cluster-metrics.json  # Deployments, StatefulSets, DaemonSets, Jobs, HPAs
+├── kubernetes-pod-metrics.json      # Pod CPU, Memory, Network, Restarts
+├── kubernetes-node-metrics.json     # Node CPU, Memory, Disk, Network
+└── README.md
+```
+
+**Deploy dashboards:**
+```bash
+./scripts/deploy-signoz-dashboards.sh              # Deploy all
+./scripts/deploy-signoz-dashboards.sh --delete-existing  # Clean deploy
+```
+
+**Update to latest official dashboards:**
+```bash
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-cluster-metrics.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-cluster-metrics.json
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-pod-metrics-overall.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-pod-metrics.json
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-node-metrics-overall.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-node-metrics.json
+```
+
+**NEVER create custom dashboards** - SigNoz query format is undocumented and error-prone. Use official dashboards or export from UI.
+
+### SigNoz API Key Authentication (2026-01-18)
+
+SigNoz API keys work with the correct header and endpoint:
+```bash
+# CORRECT - use SIGNOZ-API-KEY header with /api/v1/
+curl -H "SIGNOZ-API-KEY: <key>" http://localhost:3301/api/v1/dashboards
+
+# WRONG - these don't work
+curl -H "Authorization: Bearer <key>" ...  # Wrong header format
+curl ... http://localhost:3301/api/v2/...  # Wrong API version
+```
+
+**Create/Delete dashboards via API:**
+```bash
+# Create
+curl -X POST -H "SIGNOZ-API-KEY: <key>" -H "Content-Type: application/json" \
+  -d @dashboard.json http://localhost:3301/api/v1/dashboards
+
+# Delete
+curl -X DELETE -H "SIGNOZ-API-KEY: <key>" \
+  http://localhost:3301/api/v1/dashboards/<id>
+```
+
+### Querying ClickHouse Directly (2026-01-18)
+
+Get credentials from signoz-0 pod:
+```bash
+kubectl exec -n signoz signoz-0 -c signoz -- env | grep CLICKHOUSE_PASSWORD
+```
+
+Query metrics:
+```bash
+kubectl exec -n signoz chi-signoz-clickhouse-cluster-0-0-0 -- \
+  clickhouse-client --user default --password '<password>' \
+  --query "SELECT DISTINCT metric_name FROM signoz_metrics.time_series_v4 WHERE metric_name LIKE 'k8s%'"
+```
+
+### K8s Metrics Available in SigNoz (2026-01-18)
+
+k8sclusterreceiver provides:
+- Pod: `k8s.pod.phase`, `k8s.pod.cpu.usage`, `k8s.pod.memory.working_set`
+- Node: `k8s.node.condition_ready`, `k8s.node.cpu.usage`, `k8s.node.memory.working_set`
+- Workloads: `k8s.deployment.available`, `k8s.statefulset.ready_pods`, `k8s.daemonset.ready_nodes`
+- Container: `k8s.container.restarts`, `k8s.container.ready`
+
+Labels: `k8s.cluster.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.node.name`
 
 ## NEVER do these
 
@@ -417,7 +632,9 @@ env:
 - NEVER make infrastructure changes outside of IaC
 - NEVER deploy workloads to namespaces without checking istio-injection label
 - **NEVER use kubectl patch/apply/edit to modify deployed resources directly** - ALWAYS update the source Helm values or CloudFormation templates first, then redeploy
-- **NEVER scale to fewer than 3 nodes** - EBS volumes are AZ-bound; fewer nodes causes StatefulSet failures. ALWAYS use `scripts/graceful-startup.sh` which enforces this
+- **NEVER scale to fewer than 3 nodes** - EBS volumes are AZ-bound; fewer nodes causes StatefulSet failures. ALWAYS use `scripts/startup.sh` which enforces this
+- **NEVER create custom SigNoz dashboards** - Use official dashboards from https://github.com/SigNoz/dashboards. Custom queries have undocumented format requirements and fail silently.
+- **NEVER enable Istio on namespaces with Jobs/CronJobs** - Sidecars don't terminate when jobs complete, leaving pods in Error state forever. Velero namespace must have `istio-injection: disabled`.
 
 ## CRITICAL: IaC is the Source of Truth
 

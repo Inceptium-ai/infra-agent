@@ -2223,3 +2223,829 @@ Don't assume Istio breaks OTLP. Only GRPC has issues; HTTP/protobuf works fine. 
 
 **Lesson:**
 Stack migrations leave debris. Create and follow a cleanup checklist to ensure all orphaned resources, IaC, scripts, and documentation are properly cleaned up.
+
+---
+
+## 59. TargetGroupBindings for Automatic ALB Target Registration (2026-01-17)
+
+**Issue:** After graceful cluster restart, ALB target groups showed 0 healthy targets for Kiali. Users could not access Kiali via ALB.
+
+**Root Cause:**
+When EKS nodes terminate and new ones launch, the ALB target groups lose their targets. Without `TargetGroupBinding` CRDs, targets must be manually re-registered.
+
+**Why Other Services Worked:**
+SigNoz, Headlamp, and Kubecost had `TargetGroupBinding` resources created earlier. Kiali was missing this configuration.
+
+**Solution:**
+Create `TargetGroupBinding` resources for all services behind the ALB:
+
+```yaml
+# infra/helm/values/kiali/targetgroupbinding.yaml
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: kiali-tgb
+  namespace: istio-system
+  labels:
+    app: kiali
+spec:
+  serviceRef:
+    name: kiali
+    port: 20001
+  targetGroupARN: arn:aws:elasticloadbalancing:us-east-1:340752837296:targetgroup/infra-agent-dev-kiali-tg/7b0614394ce78a79
+  targetType: instance
+```
+
+**How TargetGroupBinding Works:**
+1. AWS Load Balancer Controller watches for TargetGroupBinding resources
+2. Controller automatically registers/deregisters node IPs with the ALB target group
+3. When nodes terminate, controller removes them from target group
+4. When nodes launch, controller adds them to target group
+5. No manual intervention required
+
+**Files Created:**
+- `infra/helm/values/kiali/targetgroupbinding.yaml`
+- `infra/helm/values/signoz/targetgroupbinding.yaml`
+- `infra/helm/values/headlamp/targetgroupbinding.yaml`
+- `infra/helm/values/kubecost/targetgroupbinding.yaml`
+
+**Lesson:**
+Every service exposed via ALB must have a TargetGroupBinding resource to ensure automatic target registration when nodes cycle. Add this to the deployment checklist for any new service.
+
+---
+
+## 60. EKS Nodes Terminate, Not Stop (By Design) (2026-01-17)
+
+**User Question:** "Why are nodes terminating? They should just shutdown and not terminate."
+
+**Answer:** This is by design. EKS Managed Node Groups use AWS Auto Scaling Groups (ASG), which terminate instances on scale-down and launch new instances on scale-up.
+
+**Why This Is Correct:**
+| Component | Scale Down | Scale Up | Design Pattern |
+|-----------|------------|----------|----------------|
+| **EKS Nodes** | Terminate | Launch new | Cattle (ephemeral) |
+| **Bastion** | Stop | Start | Pet (persistent) |
+
+**Key Points:**
+1. Kubernetes nodes are "cattle, not pets" - designed to be disposable
+2. ASG manages instance lifecycle - terminate/launch is the only supported operation
+3. Fresh nodes ensure clean state without configuration drift
+4. AWS best practice for managed Kubernetes
+
+**What IS Preserved:**
+- EBS PersistentVolumes (AZ-bound, reattach to new nodes in same AZ)
+- Kubernetes state (stored in etcd on AWS-managed control plane)
+- Pod definitions (Deployments/StatefulSets recreate pods on new nodes)
+- ConfigMaps and Secrets (stored in etcd)
+
+**What is NOT Preserved:**
+- Local ephemeral storage (emptyDir volumes)
+- Node-specific cache (container image cache rebuilt)
+- In-memory state (pods restart fresh)
+
+**Documented As:** Requirements NFR-050 to NFR-053 in `docs/requirements.md`
+
+**Lesson:**
+Don't try to make EKS nodes "stop" - embrace the terminate/launch model. Design your applications to handle node replacement gracefully.
+
+---
+
+## 61. Graceful Shutdown - Don't Scale Pods, Just Nodes (2026-01-17)
+
+**User Question:** "Do we have to scale the pods to 0? Why can't we simply set the nodes to 0? And when the nodes come back up - the pods come up automatically."
+
+**Answer:** The user is correct. The original `graceful-shutdown.sh` was over-engineered.
+
+**Old Approach (Over-engineered):**
+```bash
+# DON'T DO THIS - unnecessary steps
+kubectl scale deployments --all -n signoz --replicas=0
+kubectl scale statefulsets --all -n signoz --replicas=0
+# Wait for pods to terminate
+# Then scale nodes
+```
+
+**New Approach (Correct):**
+```bash
+# Just scale nodes to 0
+aws eks update-nodegroup-config \
+  --cluster-name infra-agent-dev-cluster \
+  --nodegroup-name infra-agent-dev-general-nodes \
+  --scaling-config minSize=0,maxSize=10,desiredSize=0
+
+# Stop bastion
+aws ec2 stop-instances --instance-ids i-02c424847cd5f557e
+```
+
+**Why This Works:**
+1. When nodes terminate, pods are evicted automatically
+2. Kubernetes handles graceful shutdown via preStop hooks and terminationGracePeriodSeconds
+3. When nodes come back, controllers (Deployment, StatefulSet, DaemonSet) recreate pods
+4. StatefulSets reattach to existing PVs
+
+**Startup (Also Simple):**
+```bash
+# Start bastion
+aws ec2 start-instances --instance-ids i-02c424847cd5f557e
+
+# Scale nodes back up
+aws eks update-nodegroup-config \
+  --cluster-name infra-agent-dev-cluster \
+  --nodegroup-name infra-agent-dev-general-nodes \
+  --scaling-config minSize=3,maxSize=10,desiredSize=3
+```
+
+**Lesson:**
+Let Kubernetes do its job. Don't manually scale pods to 0 before shutdown. Just scale nodes to 0 and let Kubernetes handle pod eviction. On startup, scale nodes up and let controllers recreate pods.
+
+---
+
+## 62. DaemonSets Don't Need Istio Sidecars (2026-01-17)
+
+**Issue:** DaemonSet pods (otel-agent, velero node-agent) failed to schedule with "Insufficient CPU" errors.
+
+**Root Cause:**
+- Istio sidecar injection adds ~100m CPU per pod
+- DaemonSets run on EVERY node
+- 3 nodes × DaemonSet pods × 100m = significant overhead
+- Cluster was at 95% CPU request allocation
+
+**Solution:**
+Disable Istio sidecar injection for DaemonSets:
+```yaml
+# In DaemonSet values
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+```
+
+**Why This Is Acceptable:**
+1. DaemonSets are infrastructure components (logging, backup agents)
+2. They communicate with control plane services, not application pods
+3. They already have secure channels (otel-agent → SigNoz, node-agent → Velero)
+4. mTLS overhead isn't justified for infrastructure traffic
+
+**Files Updated:**
+- `infra/helm/values/signoz/k8s-infra-values.yaml` (otel-agent)
+- `infra/helm/values/velero/values.yaml` (node-agent)
+
+**Lesson:**
+Not every workload needs Istio sidecars. DaemonSets for infrastructure purposes (logging, monitoring, backup) can safely skip sidecar injection to save resources.
+
+---
+
+## 63. Kiali Requires Prometheus (SigNoz Isn't Compatible) (2026-01-17)
+
+**Issue:** After migrating to SigNoz, Kiali traffic graph showed error: "no such host signoz-query-service.signoz.svc.cluster.local:8080"
+
+**Root Cause:**
+Kiali needs Prometheus to query Istio metrics. SigNoz does NOT provide a Prometheus-compatible query API. The SigNoz query service is ClickHouse-based, not Prometheus.
+
+**Solution:**
+Deploy a minimal Prometheus instance specifically for Kiali:
+
+```yaml
+# infra/helm/values/prometheus-kiali/values.yaml
+server:
+  name: prometheus-kiali
+  persistentVolume:
+    enabled: false  # No persistence needed - metrics are ephemeral
+  retention: "2h"    # Kiali only needs recent data
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+      - job_name: 'istiod'
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - istio-system
+      - job_name: 'envoy-stats'
+        metrics_path: /stats/prometheus
+        kubernetes_sd_configs:
+          - role: pod
+```
+
+**Configuration:**
+Update Kiali values to point to the new Prometheus:
+```yaml
+external_services:
+  prometheus:
+    url: "http://prometheus-kiali-server.prometheus-kiali.svc.cluster.local"
+```
+
+**Important Clarification:**
+Kiali and Prometheus are NOT part of Istio. They are separate CNCF projects that integrate with Istio:
+- **Kiali**: Service mesh visualization tool FOR Istio
+- **Prometheus**: General-purpose metrics collection that scrapes Istio metrics
+
+**Lesson:**
+SigNoz and Prometheus serve different purposes. If you need Prometheus-compatible APIs (like Kiali does), you must deploy Prometheus alongside SigNoz.
+
+---
+
+## 64. Always Validate IaC Before Deployment (2026-01-17)
+
+**User Feedback:** "did you use IaC for everything and did you do a lint and guard check on all new iac and helm code?"
+
+**Issue:** New Helm values and Kubernetes manifests were created without running validation, risking security issues.
+
+**Required Validation Steps:**
+
+### For CloudFormation:
+```bash
+source /Users/ymuwakki/infra-agent/.venv/bin/activate
+cfn-lint infra/cloudformation/stacks/**/*.yaml
+cfn-guard validate \
+  -d infra/cloudformation/stacks/ \
+  -r infra/cloudformation/cfn-guard-rules/nist-800-53/
+```
+
+### For Kubernetes/Helm:
+```bash
+# Schema validation (kubeconform)
+kubeconform -strict infra/helm/values/**/*.yaml
+
+# Security validation (kube-linter)
+kube-linter lint infra/helm/values/
+```
+
+**Common kube-linter Findings:**
+- Missing resource limits
+- Missing security context (readOnlyRootFilesystem, runAsNonRoot)
+- Containers running as root
+- Missing liveness/readiness probes
+
+**What We Fixed:**
+1. Added `securityContext` to prometheus-kiali values
+2. Added resource limits to all init containers
+3. Added `readOnlyRootFilesystem: true` where applicable
+
+**NEVER Deploy Without Validation:**
+```markdown
+## Pre-Deployment Checklist
+- [ ] cfn-lint passes (0 errors)
+- [ ] cfn-guard passes (0 FAIL)
+- [ ] kubeconform passes (0 invalid)
+- [ ] kube-linter passes (0 errors)
+```
+
+**Lesson:**
+Always validate ALL IaC changes before deployment. cfn-lint + cfn-guard for CloudFormation, kubeconform + kube-linter for Kubernetes. This is non-negotiable.
+
+---
+
+## 65. Schema Migrator Job Deletion Causes Startup Issues (2026-01-17)
+
+**Issue:** After cluster restart, SigNoz otel-collector pods stuck in Init:0/1 state indefinitely.
+
+**Root Cause:**
+1. SigNoz uses a Kubernetes Job for schema migrations
+2. During shutdown, the Job was deleted (Job completed + TTL or manual cleanup)
+3. On startup, otel-collector init container waits for schema migration to complete
+4. With no Job to wait for, init container hangs forever
+
+**Symptoms:**
+```
+kubectl get pods -n signoz
+NAME                                   READY   STATUS     RESTARTS
+signoz-otel-collector-xxx              0/1     Init:0/1   0
+```
+
+**Solution:**
+Run `helm upgrade` to recreate the schema migration Job:
+```bash
+helm upgrade signoz signoz/signoz -n signoz -f infra/helm/values/signoz/values.yaml
+```
+
+**Why This Works:**
+Helm upgrade recreates the Job, which runs the schema migration. Once complete, the init container succeeds and otel-collector starts.
+
+**Prevention:**
+- Document this in startup runbook
+- Consider using `ttlSecondsAfterFinished: 86400` (1 day) instead of immediate cleanup
+- After startup, verify Jobs exist: `kubectl get jobs -n signoz`
+
+**Lesson:**
+Helm Jobs may not survive cluster restart. When troubleshooting pods stuck in Init state, check if dependent Jobs exist. Use `helm upgrade` to recreate missing Jobs.
+
+---
+
+## 66. Infrastructure Telemetry Collectors Don't Need Istio (2026-01-17)
+
+**Issue:** k8s-infra-otel-deployment (cluster metrics collector) failed to export metrics with "protocol error" and "no healthy upstream".
+
+**Root Cause:**
+The k8s-infra deployment collector had Istio sidecar enabled, but OTLP gRPC doesn't work through Istio Envoy proxy due to protocol incompatibility.
+
+**Error Messages:**
+```
+"error":"rpc error: code = Unavailable desc = no healthy upstream"
+"error":"rpc error: code = Unavailable desc = upstream connect error or disconnect/reset before headers. reset reason: protocol error"
+```
+
+**Solution:**
+Disable Istio sidecar for ALL infrastructure telemetry collectors:
+
+```yaml
+# infra/helm/values/signoz/k8s-infra-values.yaml
+otelAgent:  # DaemonSet
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
+otelDeployment:  # Deployment (cluster metrics)
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+```
+
+**Why This Is Acceptable:**
+1. Infrastructure telemetry is internal cluster traffic
+2. otel-collector → SigNoz communication is internal
+3. No user-facing data traverses this path
+4. The alternative (HTTP/protobuf through Istio) adds unnecessary complexity
+
+**Rule:**
+**ALL otel-collector components should disable Istio sidecar:**
+- otel-agent (DaemonSet) - already disabled
+- otel-deployment (Deployment) - now disabled
+- signoz-otel-collector - also doesn't need sidecar for internal ingestion
+
+**Lesson:**
+Infrastructure telemetry collectors (OpenTelemetry agents, Prometheus, etc.) should skip Istio sidecar injection. They communicate internally and gRPC doesn't work through Envoy.
+
+---
+
+## 67. SigNoz API Key Authentication (2026-01-18)
+
+**Issue:** Initial attempts to use SigNoz API failed, returning HTML login page.
+
+**Root Cause:**
+Was using wrong API version endpoint (`/api/v2/`) and wrong header formats.
+
+**Correct Format:**
+```bash
+# This WORKS - use SIGNOZ-API-KEY header with v1 API
+curl -H "SIGNOZ-API-KEY: <key>" http://localhost:3301/api/v1/dashboards
+
+# These DON'T work:
+curl -H "Authorization: Bearer <key>" ...  # Wrong header
+curl ... http://localhost:3301/api/v2/...  # Wrong API version
+```
+
+**Create API Key:**
+SigNoz UI → Settings → API Keys → Create
+
+**Example - Create Dashboard via API:**
+```bash
+curl -X POST \
+  -H "SIGNOZ-API-KEY: <key>" \
+  -H "Content-Type: application/json" \
+  -d @dashboard.json \
+  "http://localhost:3301/api/v1/dashboards"
+```
+
+**Example - Delete Dashboard:**
+```bash
+curl -X DELETE \
+  -H "SIGNOZ-API-KEY: <key>" \
+  "http://localhost:3301/api/v1/dashboards/<dashboard-id>"
+```
+
+**Lesson:**
+SigNoz API keys DO work in OSS. Use `SIGNOZ-API-KEY` header (not Authorization Bearer) with `/api/v1/` endpoints.
+
+---
+
+## 68. Accessing ClickHouse Credentials in SigNoz (2026-01-18)
+
+**Issue:** Need to query ClickHouse directly but don't know credentials.
+
+**Solution:**
+Get credentials from the SigNoz pod environment variables:
+
+```bash
+# Get ClickHouse credentials
+kubectl exec -n signoz signoz-0 -c signoz -- env | grep -i click
+
+# Output includes:
+# CLICKHOUSE_USER=default
+# CLICKHOUSE_PASSWORD=<uuid>
+# CLICKHOUSE_HOST=signoz-clickhouse
+```
+
+**Query ClickHouse Directly:**
+```bash
+kubectl exec -n signoz chi-signoz-clickhouse-cluster-0-0-0 -- \
+  clickhouse-client --user default --password '<password>' \
+  --query "SELECT DISTINCT metric_name FROM signoz_metrics.time_series_v4 WHERE metric_name LIKE 'k8s%'"
+```
+
+**Use Cases:**
+- Verify what metrics are being collected
+- Debug metric pipeline issues
+- Check data retention
+
+**Lesson:**
+When debugging SigNoz metrics, query ClickHouse directly using credentials from the signoz-0 pod environment. Don't try to use the API.
+
+---
+
+## 69. SigNoz Dashboard Variable Queries with Backticks Fail (2026-01-18)
+
+**Issue:** Dashboard variable query returned error: "Unknown expression identifier `k8s.cluster.name`"
+
+**Problem Query:**
+```sql
+SELECT JSONExtractString(labels, 'k8s.cluster.name')
+FROM signoz_metrics.distributed_time_series_v4_1day
+WHERE metric_name = 'k8s.container.ready'
+GROUP BY `k8s.cluster.name`   -- THIS FAILS
+```
+
+**Root Cause:**
+ClickHouse interprets backtick-quoted identifiers as column names, not as strings. The `GROUP BY \`k8s.cluster.name\`` tries to group by a non-existent column.
+
+**Solution:**
+Use SigNoz builder query format instead of raw SQL for dashboards:
+
+```json
+{
+  "query": {
+    "builder": {
+      "queryData": [{
+        "dataSource": "metrics",
+        "aggregateOperator": "count",
+        "aggregateAttribute": {
+          "key": "k8s.pod.phase",
+          "type": "Gauge"
+        },
+        "groupBy": [{
+          "key": "k8s.cluster.name",
+          "type": "tag"
+        }]
+      }]
+    },
+    "queryType": "builder"
+  }
+}
+```
+
+**Better Approach:**
+Avoid using variable queries with raw SQL. Use the builder format which SigNoz translates correctly.
+
+**Lesson:**
+SigNoz dashboard queries should use the builder format, not raw ClickHouse SQL. The builder handles label extraction and grouping correctly.
+
+---
+
+## 70. K8s Metrics from k8sclusterreceiver (2026-01-18)
+
+**Context:** SigNoz k8s-infra Helm chart deploys an OTel collector with k8sclusterreceiver and kubeletstatsreceiver.
+
+**Available Metric Categories:**
+
+| Category | Metrics |
+|----------|---------|
+| Pod | `k8s.pod.phase`, `k8s.pod.cpu.usage`, `k8s.pod.memory.working_set` |
+| Container | `k8s.container.restarts`, `k8s.container.ready`, `k8s.container.cpu_limit` |
+| Node | `k8s.node.condition_ready`, `k8s.node.cpu.usage`, `k8s.node.memory.working_set` |
+| Deployment | `k8s.deployment.available`, `k8s.deployment.desired` |
+| StatefulSet | `k8s.statefulset.ready_pods`, `k8s.statefulset.current_pods` |
+| DaemonSet | `k8s.daemonset.ready_nodes`, `k8s.daemonset.desired_scheduled_nodes` |
+| Volume | `k8s.volume.available`, `k8s.volume.capacity` |
+
+**Labels Available:**
+- `k8s.cluster.name` - Cluster identifier
+- `k8s.namespace.name` - Namespace
+- `k8s.pod.name` - Pod name
+- `k8s.node.name` - Node name
+- `k8s.deployment.name` - Deployment name
+
+**Verify Metrics Collection:**
+```bash
+# Check collector logs
+kubectl logs -n signoz deploy/k8s-infra-otel-deployment --tail=20
+# Should show: "Completed syncing shared informer caches"
+
+# Query ClickHouse for available metrics
+kubectl exec -n signoz chi-signoz-clickhouse-cluster-0-0-0 -- \
+  clickhouse-client --user default --password '<password>' \
+  --query "SELECT DISTINCT metric_name FROM signoz_metrics.time_series_v4 WHERE metric_name LIKE 'k8s%'"
+```
+
+**Dashboard Location:**
+```
+infra/helm/values/signoz/dashboards/kubernetes-cluster-metrics.json
+```
+
+**Lesson:**
+K8s metrics in SigNoz come from k8sclusterreceiver (workload metrics) and kubeletstatsreceiver (node/pod resource metrics). Always verify collection is working by checking collector logs before creating dashboards.
+
+---
+
+## 71. SigNoz Dashboard Panel Types (2026-01-18)
+
+**Context:** Creating custom dashboards in SigNoz via API.
+
+**Valid Panel Types:**
+| Panel Type | Use Case |
+|------------|----------|
+| `graph` | Time series visualization (line charts) |
+| `table` | Tabular data display |
+| `list` | Simple list of values |
+
+**Invalid Panel Types:**
+| Panel Type | Error |
+|------------|-------|
+| `pie` | "panel type is invalid: invalid panel type: pie" |
+| `value` | "error in builder queries" |
+
+**Query Format:**
+SigNoz normalizes dashboard queries on save. The API accepts:
+```json
+{
+  "aggregateOperator": "count",
+  "aggregateAttribute": {"key": "k8s.pod.phase", ...}
+}
+```
+
+But stores internally as:
+```json
+{
+  "aggregations": [{
+    "metricName": "k8s.pod.phase",
+    "spaceAggregation": "sum",
+    "timeAggregation": "count"
+  }]
+}
+```
+
+**Best Practice:**
+When creating IaC dashboards, export the normalized version from SigNoz after first deployment:
+```bash
+curl -s -H "SIGNOZ-API-KEY: $API_KEY" \
+  http://localhost:3301/api/v1/dashboards/$DASHBOARD_ID | \
+  jq '.data.data' > dashboards/my-dashboard.json
+```
+
+**Lesson:**
+Always use `graph`, `table`, or `list` panel types. Export normalized dashboard JSON after creation for IaC to ensure consistency.
+
+---
+
+## 72. Use Official SigNoz Dashboards Instead of Custom (2026-01-18)
+
+**Context:** Attempted to create custom K8s dashboards for SigNoz, but queries kept failing due to incorrect aggregation settings.
+
+**Problem:**
+- Custom dashboards had incorrect query structures (missing `timeAggregation`, wrong `spaceAggregation`)
+- SigNoz normalizes queries on save, but doesn't validate all combinations
+- Panels with empty aggregation settings fail silently in the UI
+
+**Solution:** Use official pre-built dashboards from https://github.com/SigNoz/dashboards
+
+```bash
+# Download official K8s dashboards
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-cluster-metrics.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-cluster-metrics.json
+
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-pod-metrics-overall.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-pod-metrics.json
+
+curl -s "https://raw.githubusercontent.com/SigNoz/dashboards/main/k8s-infra-metrics/kubernetes-node-metrics-overall.json" \
+  -o infra/helm/values/signoz/dashboards/kubernetes-node-metrics.json
+```
+
+**Available Official K8s Dashboards:**
+| Dashboard | Content |
+|-----------|---------|
+| `kubernetes-cluster-metrics.json` | Deployments, DaemonSets, StatefulSets, Jobs, HPAs, Pods by phase |
+| `kubernetes-pod-metrics-overall.json` | CPU, Memory, Network, Restarts by pod |
+| `kubernetes-node-metrics-overall.json` | CPU, Memory, Disk, Network by node |
+| `kubernetes-pvc-metrics.json` | PVC capacity and usage |
+
+**Lesson:**
+Always use official SigNoz dashboards when available. Custom dashboard creation is error-prone due to undocumented query format requirements.
+
+---
+
+## 73. Velero Kopia Maintenance Jobs Fail with Istio and readOnlyRootFilesystem (2026-01-18)
+
+**Context:** After cluster restart, Velero Kopia maintenance jobs showed Error status. All 16 maintenance job pods (one per backed-up namespace) were failing.
+
+**Problem 1 - Istio Sidecar on Jobs:**
+```
+Events:
+  Normal  Killing  3m32s  kubelet  Stopping container istio-proxy
+```
+Jobs with Istio sidecars don't terminate properly because the istio-proxy container keeps running after the main container completes, leaving the pod in Error state.
+
+**Problem 2 - readOnlyRootFilesystem:**
+```
+Repo maintenance error: error to connect backup repo: unable to create config directory: mkdir /nonexistent: read-only file system
+```
+Kopia tries to write to HOME directory (`/nonexistent` for user 65534), but `readOnlyRootFilesystem: true` prevents this.
+
+**Root Cause:**
+1. `velero` namespace had `istio-injection: enabled` despite being documented as needing Istio disabled
+2. Velero pods run as user 65534 whose HOME is `/nonexistent`, which isn't writable
+
+**Solution:**
+
+1. Disable Istio injection for velero namespace:
+```yaml
+# infra/helm/values/velero/namespace.yaml
+metadata:
+  labels:
+    istio-injection: disabled  # Jobs don't work with sidecars
+```
+
+2. Set HOME to writable directory in Velero values:
+```yaml
+# infra/helm/values/velero/values.yaml
+extraEnvVars:
+  - name: HOME
+    value: "/tmp"
+```
+
+3. Apply changes:
+```bash
+kubectl apply -f infra/helm/values/velero/namespace.yaml
+helm upgrade velero vmware-tanzu/velero -n velero -f infra/helm/values/velero/values.yaml
+```
+
+**Files Changed:**
+- `infra/helm/values/velero/namespace.yaml` - `istio-injection: disabled`
+- `infra/helm/values/velero/values.yaml` - Added `extraEnvVars` with `HOME=/tmp`
+
+**Lesson:**
+1. Jobs (CronJobs, batch Jobs) should NEVER have Istio sidecars - the sidecar doesn't terminate when the job completes
+2. When using `readOnlyRootFilesystem: true` with non-root users, ensure HOME points to a writable location (usually /tmp via emptyDir)
+3. Always verify namespace labels match documentation after cluster operations
+
+---
+
+## 74. Helm Values Must Match Chart Structure Exactly (2026-01-18)
+
+**Context:** Added `extraEnvVars` to Velero values.yaml to set `HOME=/tmp`, but the fix didn't take effect after `helm upgrade`.
+
+**Problem:**
+```yaml
+# WRONG - extraEnvVars at top level
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+
+extraEnvVars:           # <-- Wrong location!
+  - name: HOME
+    value: "/tmp"
+
+configuration:
+  backupStorageLocation:
+    ...
+```
+
+The Helm chart ignored the value because it was at the wrong YAML level.
+
+**Root Cause:** Didn't check `helm show values <chart>` to verify the correct structure. The Velero chart expects `extraEnvVars` under `configuration:`, not at the top level.
+
+**Solution:**
+```yaml
+# CORRECT - extraEnvVars under configuration
+configuration:
+  extraEnvVars:         # <-- Correct location
+    - name: HOME
+      value: "/tmp"
+  backupStorageLocation:
+    ...
+```
+
+**How to Verify:**
+```bash
+# Always check chart structure before adding new values
+helm show values <chart> | grep -B 5 -A 10 "<key-name>"
+
+# After upgrade, verify the value took effect
+kubectl get deployment <name> -o jsonpath='{.spec.template.spec.containers[0].env}' | jq .
+```
+
+**Lesson:**
+1. ALWAYS run `helm show values <chart>` to verify correct YAML structure before adding new keys
+2. After `helm upgrade`, verify changes took effect by inspecting the deployed resources
+3. Helm silently ignores values at wrong YAML levels - no error is thrown
+
+---
+
+## 75. DaemonSet Pods Orphaned on Terminated Nodes (2026-01-18)
+
+**Context:** After cluster restart, DaemonSet pods showed Pending status forever. DaemonSets reported DESIRED=4 but only 3 nodes existed.
+
+**Problem:**
+```
+NAMESPACE     NAME       DESIRED   CURRENT   READY
+kube-system   aws-node   4         4         3      # 4 desired but only 3 nodes!
+
+kubectl get pods -A | grep Pending
+kube-system   aws-node-lb2wg     0/2   Pending   # Stuck forever
+```
+
+**Root Cause:** When EKS nodes terminate during scale-down, pods already scheduled to those nodes can get orphaned. The pod remains in Pending state, assigned to a node that no longer exists or is NotReady. Kubernetes doesn't automatically clean these up.
+
+**Timeline:**
+1. Shutdown scales nodes to 0
+2. New startup scales nodes to 3
+3. Old node objects briefly exist alongside new nodes (SchedulingDisabled)
+4. DaemonSet controllers schedule pods to old nodes (still in node list)
+5. Old nodes transition: Ready,SchedulingDisabled → NotReady,SchedulingDisabled → removed
+6. During overlap period, DaemonSet controllers keep recreating pods on old nodes
+7. Pods remain Pending, assigned to non-existent/NotReady nodes
+
+**Solution:** Post-startup cleanup script that deletes pods scheduled to non-Ready nodes.
+
+```bash
+# scripts/cleanup-orphaned-pods.sh
+# Only consider nodes that are Ready (exclude NotReady, SchedulingDisabled)
+READY_NODES=$(kubectl get nodes --no-headers | grep " Ready " | grep -v "NotReady" | grep -v "SchedulingDisabled" | awk '{print $1}')
+
+kubectl get pods -A --field-selector=status.phase=Pending --no-headers | while read line; do
+    NAMESPACE=$(echo "$line" | awk '{print $1}')
+    POD=$(echo "$line" | awk '{print $2}')
+    NODE=$(kubectl get pod -n "$NAMESPACE" "$POD" -o jsonpath='{.spec.nodeName}')
+
+    if [ -n "$NODE" ] && ! echo "$READY_NODES" | grep -q "^${NODE}$"; then
+        kubectl delete pod -n "$NAMESPACE" "$POD" --force --grace-period=0
+    fi
+done
+
+# Also clean up failed Velero Kopia jobs
+kubectl get pods -n velero --no-headers | grep -E "kopia.*Error" | awk '{print $1}' | xargs -r kubectl delete pod -n velero
+```
+
+**Usage:**
+```bash
+./scripts/startup.sh                # Start cluster (waits for bastion + SSM)
+./scripts/tunnel.sh                 # Connect to cluster
+./scripts/cleanup-orphaned-pods.sh  # Clean up orphaned pods (may need to run multiple times)
+```
+
+**Important:** During the ~2-3 minute overlap period while old nodes terminate, DaemonSet controllers keep recreating pods on the terminating nodes. You may need to run cleanup-orphaned-pods.sh multiple times until old nodes are fully removed.
+
+**Alternative Solutions (not implemented):**
+- **AWS Node Termination Handler (NTH)** - production best practice, handles graceful draining
+- **Wait for 0 nodes before startup** - modify startup.sh to wait until old nodes fully terminate before scaling up new ones (eliminates overlap period)
+- **Karpenter** - better node lifecycle management
+
+**Files:**
+- `scripts/startup.sh` - Starts bastion, waits for SSM, scales nodes
+- `scripts/shutdown.sh` - Scales nodes to 0, stops bastion
+- `scripts/cleanup-orphaned-pods.sh` - Deletes orphaned pods on NotReady/terminated nodes
+
+**Lesson:**
+1. EKS node termination can orphan scheduled pods
+2. DaemonSet controllers recreate pods on terminating nodes during overlap period
+3. Cleanup script must check for NotReady nodes, not just non-existent ones
+4. Always run cleanup script after cluster restart
+5. For production, implement AWS Node Termination Handler or wait for 0 nodes
+
+---
+
+## 76. Bastion Start Command Silently Fails with || true (2026-01-18)
+
+**Context:** After running startup.sh, the bastion was still stopped. The script reported success but the bastion never started.
+
+**Problem:**
+```bash
+# Original startup.sh - WRONG
+aws ec2 start-instances --instance-ids $BASTION_ID --region $REGION > /dev/null 2>&1 || true
+```
+
+The `> /dev/null 2>&1 || true` suppresses all output AND errors. If the start-instances command fails for any reason, the script continues silently.
+
+**Root Cause:** Defensive coding that went too far. The `|| true` was added to handle the case where bastion is already running (which returns an error), but it also hides real failures.
+
+**Solution:** Properly check bastion state and wait for it:
+```bash
+# Fixed startup.sh - CORRECT
+BASTION_STATE=$(aws ec2 describe-instances --instance-ids $BASTION_ID --region $REGION --query 'Reservations[0].Instances[0].State.Name' --output text)
+if [ "$BASTION_STATE" = "stopped" ]; then
+    aws ec2 start-instances --instance-ids $BASTION_ID --region $REGION > /dev/null
+    aws ec2 wait instance-running --instance-ids $BASTION_ID --region $REGION
+elif [ "$BASTION_STATE" = "running" ]; then
+    echo "Bastion already running."
+fi
+
+# Also wait for SSM agent
+for i in {1..30}; do
+    SSM_STATUS=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$BASTION_ID" --query 'InstanceInformationList[0].PingStatus' --output text)
+    if [ "$SSM_STATUS" = "Online" ]; then break; fi
+    sleep 5
+done
+```
+
+**Lesson:**
+1. Never use `|| true` to hide errors from critical operations
+2. Check preconditions explicitly instead of suppressing errors
+3. Use `aws ec2 wait` commands to ensure state transitions complete
+4. SSM agent takes additional time after instance is "running" - must wait for it separately

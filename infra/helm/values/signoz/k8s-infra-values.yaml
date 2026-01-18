@@ -6,6 +6,7 @@
 # Install: helm install k8s-infra signoz/k8s-infra -n signoz -f infra/helm/values/signoz/k8s-infra-values.yaml
 
 # OTel Collector endpoint (SigNoz)
+# Using gRPC (4317) since Istio sidecar is disabled for infrastructure telemetry
 otelCollectorEndpoint: signoz-otel-collector.signoz.svc.cluster.local:4317
 otelInsecure: true
 
@@ -37,9 +38,10 @@ otelAgent:
 # Deployment collector (cluster-wide metrics)
 otelDeployment:
   enabled: true
-  # Istio sidecar injection
+  # Istio sidecar NOT injected - infrastructure telemetry doesn't need mTLS
+  # and OTLP gRPC fails through Istio Envoy proxy
   podAnnotations:
-    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/inject: "false"
   # Resource limits
   resources:
     requests:
