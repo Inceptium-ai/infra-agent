@@ -29,6 +29,92 @@ class K8sAgent(BaseAgent):
         self._helm_values_path = Path(__file__).parent.parent.parent.parent.parent / "infra" / "helm" / "values"
         self._kubeconfig_set = False
 
+    async def process_pipeline(self, state: dict[str, Any]) -> dict[str, Any]:
+        """
+        Process pipeline state for LangGraph workflow.
+
+        Called by the LangGraph StateGraph for query requests.
+        Handles kubectl and Helm queries.
+
+        Args:
+            state: PipelineState dictionary
+
+        Returns:
+            Updated state with query results
+        """
+        messages = state.get("messages", [])
+        if not messages:
+            return {"messages": [AIMessage(content="No query to process")]}
+
+        # Get the last user message
+        last_message = messages[-1]
+        user_input = last_message.content if hasattr(last_message, "content") else str(last_message)
+
+        # Ensure kubeconfig is set
+        if not self._kubeconfig_set:
+            self._setup_kubeconfig_simple()
+
+        # Use tools for query execution
+        query_prompt = f"""Execute this Kubernetes query and return the results:
+
+Query: {user_input}
+
+Use kubectl or helm commands as appropriate."""
+
+        try:
+            response, tool_calls = await self.invoke_with_tools(
+                user_message=query_prompt,
+                max_iterations=3,
+            )
+
+            return {"messages": [AIMessage(content=response)]}
+
+        except Exception as e:
+            # Fallback to direct handling
+            response = await self._handle_query_direct(user_input.lower())
+            return {"messages": [AIMessage(content=response)]}
+
+    def _setup_kubeconfig_simple(self) -> None:
+        """Simple kubeconfig setup without state."""
+        settings = get_settings()
+        aws_settings = get_aws_settings()
+        cluster_name = settings.eks_cluster_name_computed
+
+        try:
+            subprocess.run(
+                [
+                    "aws", "eks", "update-kubeconfig",
+                    "--name", cluster_name,
+                    "--region", aws_settings.aws_region,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self._kubeconfig_set = True
+        except Exception:
+            pass
+
+    async def _handle_query_direct(self, user_input: str) -> str:
+        """Handle queries directly without tools."""
+        if "pods" in user_input:
+            namespace = self._extract_namespace(user_input) or "default"
+            return self._kubectl_get("pods", namespace)
+        elif "nodes" in user_input:
+            return self._kubectl_get("nodes")
+        elif "namespaces" in user_input:
+            return self._kubectl_get("namespaces")
+        elif "deployments" in user_input:
+            namespace = self._extract_namespace(user_input)
+            return self._kubectl_get("deployments", namespace)
+        elif "services" in user_input:
+            namespace = self._extract_namespace(user_input)
+            return self._kubectl_get("services", namespace)
+        elif "helm" in user_input and "list" in user_input:
+            return self._helm_list(None)
+        else:
+            return f"Query not recognized: {user_input}"
+
     async def process(self, state: InfraAgentState) -> InfraAgentState:
         """
         Process K8s-related operations.
@@ -425,6 +511,26 @@ class K8sAgent(BaseAgent):
         except Exception as e:
             return f"Error: {str(e)}"
 
+    def _check_tunnel_error(self, stderr: str) -> Optional[str]:
+        """Check if error is due to missing SSM tunnel and return helpful message."""
+        tunnel_indicators = [
+            "connection refused",
+            "localhost:6443",
+            "Unable to connect to the server",
+            "dial tcp",
+            "no such host",
+        ]
+        if any(indicator in stderr.lower() for indicator in tunnel_indicators):
+            return (
+                "**SSM Tunnel Required**\n\n"
+                "The EKS cluster has a private endpoint. Start the tunnel first:\n\n"
+                "```bash\n"
+                "./scripts/tunnel.sh\n"
+                "```\n\n"
+                "Keep the tunnel running in a separate terminal, then try again."
+            )
+        return None
+
     def _kubectl_get(self, resource: str, namespace: Optional[str] = None) -> str:
         """Execute kubectl get command."""
         try:
@@ -444,6 +550,10 @@ class K8sAgent(BaseAgent):
             if result.returncode == 0:
                 return f"**{resource.title()}:**\n```\n{result.stdout}\n```"
             else:
+                # Check for tunnel error first
+                tunnel_msg = self._check_tunnel_error(result.stderr)
+                if tunnel_msg:
+                    return tunnel_msg
                 return f"Error: {result.stderr}"
 
         except FileNotFoundError:
@@ -464,6 +574,9 @@ class K8sAgent(BaseAgent):
             if result.returncode == 0:
                 return f"**Logs for {pod_name}:**\n```\n{result.stdout}\n```"
             else:
+                tunnel_msg = self._check_tunnel_error(result.stderr)
+                if tunnel_msg:
+                    return tunnel_msg
                 return f"Error: {result.stderr}"
 
         except Exception as e:
