@@ -73,248 +73,26 @@ Resources:
             VolumeType: gp3
             Encrypted: true
             DeleteOnTermination: true
+      # Minimal UserData - bastion is only used for SSM tunneling
+      # All tools (kubectl, helm, etc.) run on the local machine through the tunnel
       UserData:
-        Fn::Base64: !Sub |
+        Fn::Base64: |
           #!/bin/bash
-          # Bastion Host Setup Script
-          # Logs to /var/log/bastion-setup.log
+          # Minimal Bastion Setup - SSM Tunnel Only
+          # No tools installed - all K8s/AWS operations done locally via tunnel
 
           exec > >(tee /var/log/bastion-setup.log) 2>&1
           echo "=== Bastion Setup Started: $(date) ==="
 
-          # Update system
+          # Update system packages for security
           echo "Updating system packages..."
           dnf update -y
 
-          # Install useful tools for network testing
-          # Note: curl-minimal is pre-installed on AL2023, skip curl to avoid conflicts
-          echo "Installing tools..."
-          dnf install -y \
-            bind-utils \
-            net-tools \
-            tcpdump \
-            traceroute \
-            telnet \
-            nmap-ncat \
-            jq \
-            wget \
-            htop \
-            vim \
-            unzip \
-            tar \
-            git
+          # SSM Agent is pre-installed on Amazon Linux 2023
+          # Verify it's running
+          systemctl status amazon-ssm-agent || systemctl start amazon-ssm-agent
 
-          # Install AWS CLI v2
-          echo "Installing AWS CLI v2..."
-          cd /tmp
-          curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip -q awscliv2.zip
-          ./aws/install --update
-          rm -rf aws awscliv2.zip
-          /usr/local/bin/aws --version
-
-          # Install kubectl (matching EKS version)
-          echo "Installing kubectl v1.34.0..."
-          curl -sS -LO "https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          mv kubectl /usr/local/bin/
-          /usr/local/bin/kubectl version --client
-
-          # Install helm
-          echo "Installing Helm..."
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          helm version
-
-          # Install eksctl
-          echo "Installing eksctl..."
-          curl -sS --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
-          mv /tmp/eksctl /usr/local/bin/
-          eksctl version
-
-          # Install k9s (Kubernetes CLI UI)
-          echo "Installing k9s..."
-          curl -sS -L "https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz" | tar xz -C /tmp
-          mv /tmp/k9s /usr/local/bin/
-          k9s version || true
-
-          # Install stern (multi-pod log tailing)
-          echo "Installing stern..."
-          curl -sS -L "https://github.com/stern/stern/releases/latest/download/stern_linux_amd64.tar.gz" | tar xz -C /tmp
-          mv /tmp/stern /usr/local/bin/
-          stern --version || true
-
-          # Install kubectx and kubens (context/namespace switching)
-          echo "Installing kubectx/kubens..."
-          curl -sS -L "https://github.com/ahmetb/kubectx/releases/latest/download/kubectx" -o /usr/local/bin/kubectx
-          curl -sS -L "https://github.com/ahmetb/kubectx/releases/latest/download/kubens" -o /usr/local/bin/kubens
-          chmod +x /usr/local/bin/kubectx /usr/local/bin/kubens
-
-          # Install yq (YAML processor)
-          echo "Installing yq..."
-          curl -sS -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
-          chmod +x /usr/local/bin/yq
-          yq --version || true
-
-          # Install istioctl (Istio CLI)
-          echo "Installing istioctl..."
-          curl -sS -L https://istio.io/downloadIstio | ISTIO_VERSION=1.24.2 sh -
-          mv istio-*/bin/istioctl /usr/local/bin/
-          rm -rf istio-*
-          istioctl version --remote=false || true
-
-          # Install velero CLI (backup management)
-          echo "Installing velero CLI..."
-          curl -sS -L "https://github.com/vmware-tanzu/velero/releases/latest/download/velero-v1.15.2-linux-amd64.tar.gz" | tar xz -C /tmp
-          mv /tmp/velero-*/velero /usr/local/bin/
-          rm -rf /tmp/velero-*
-          velero version --client-only || true
-
-          # Configure kubeconfig for ec2-user
-          echo "Configuring kubeconfig for ec2-user..."
-          mkdir -p /home/ec2-user/.kube
-          /usr/local/bin/aws eks update-kubeconfig \
-            --name ${ProjectName}-${Environment}-cluster \
-            --region ${AWS::Region} \
-            --kubeconfig /home/ec2-user/.kube/config || true
-          chown -R ec2-user:ec2-user /home/ec2-user/.kube
-
-          # Configure kubeconfig for root
-          /usr/local/bin/aws eks update-kubeconfig \
-            --name ${ProjectName}-${Environment}-cluster \
-            --region ${AWS::Region} || true
-
-          # Add kubectl completion and aliases
-          echo "Configuring shell environment..."
-          cat >> /home/ec2-user/.bashrc << 'BASHRC'
-
-          # Kubernetes aliases
-          alias k='kubectl'
-          alias kgp='kubectl get pods'
-          alias kgs='kubectl get svc'
-          alias kgn='kubectl get nodes'
-          alias kga='kubectl get all'
-          alias kd='kubectl describe'
-          alias kl='kubectl logs'
-          alias kex='kubectl exec -it'
-          alias kns='kubens'
-          alias kctx='kubectx'
-
-          # kubectl completion
-          source <(kubectl completion bash)
-          complete -F __start_kubectl k
-
-          # helm completion
-          source <(helm completion bash)
-
-          # stern completion
-          source <(stern --completion bash)
-
-          # AWS region
-          export AWS_DEFAULT_REGION=${AWS::Region}
-
-          # KUBECONFIG - required for SSM sessions
-          export KUBECONFIG=/root/.kube/config
-
-          # Path
-          export PATH=$PATH:/usr/local/bin
-
-          # Helpful functions
-          kexec() { kubectl exec -it "$1" -- /bin/sh; }
-          klogs() { stern "$1" --tail 100; }
-          BASHRC
-          chown ec2-user:ec2-user /home/ec2-user/.bashrc
-
-          # Create network test script
-          echo "Creating test scripts..."
-          cat > /home/ec2-user/test-network.sh << 'SCRIPT'
-          #!/bin/bash
-          echo "=== Network Connectivity Tests ==="
-          echo ""
-
-          echo "1. Testing DNS resolution..."
-          nslookup google.com && echo "  DNS: OK" || echo "  DNS: FAILED"
-          echo ""
-
-          echo "2. Testing internet connectivity (via NAT Gateway)..."
-          curl -s --connect-timeout 5 https://www.google.com > /dev/null && echo "  Internet: OK" || echo "  Internet: FAILED"
-          echo ""
-
-          echo "3. Testing AWS API connectivity..."
-          aws sts get-caller-identity > /dev/null 2>&1 && echo "  AWS API: OK" || echo "  AWS API: FAILED"
-          echo ""
-
-          echo "4. Testing container registry access..."
-          curl -s --connect-timeout 5 https://public.ecr.aws/v2/ > /dev/null && echo "  ECR Public: OK" || echo "  ECR Public: FAILED"
-          curl -s --connect-timeout 5 https://registry-1.docker.io/v2/ > /dev/null && echo "  Docker Hub: OK" || echo "  Docker Hub: FAILED"
-          curl -s --connect-timeout 5 https://ghcr.io/v2/ > /dev/null && echo "  GHCR: OK" || echo "  GHCR: FAILED"
-          echo ""
-
-          echo "5. Testing VPC CIDR ranges..."
-          echo "  Primary VPC CIDR: 10.0.0.0/16"
-          echo "  Pod CIDR: 100.64.0.0/16"
-          ip route
-          echo ""
-
-          echo "6. Local network info..."
-          echo "  Hostname: $(hostname)"
-          echo "  Private IP: $(hostname -I | awk '{print $1}')"
-          echo "  Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo 'N/A')"
-          echo ""
-
-          echo "=== Tests Complete ==="
-          SCRIPT
-          chmod +x /home/ec2-user/test-network.sh
-          chown ec2-user:ec2-user /home/ec2-user/test-network.sh
-
-          # Create EKS test script
-          cat > /home/ec2-user/test-eks.sh << 'EKSSCRIPT'
-          #!/bin/bash
-          echo "=== EKS Connectivity Tests ==="
-          echo ""
-
-          echo "1. kubectl version..."
-          kubectl version --client
-          echo ""
-
-          echo "2. Cluster info..."
-          kubectl cluster-info
-          echo ""
-
-          echo "3. Nodes..."
-          kubectl get nodes -o wide
-          echo ""
-
-          echo "4. System pods..."
-          kubectl get pods -n kube-system
-          echo ""
-
-          echo "5. Namespaces..."
-          kubectl get namespaces
-          echo ""
-
-          echo "=== EKS Tests Complete ==="
-          EKSSCRIPT
-          chmod +x /home/ec2-user/test-eks.sh
-          chown ec2-user:ec2-user /home/ec2-user/test-eks.sh
-
-          # Verify installations
-          echo ""
-          echo "=== Installed Tools ==="
-          echo "AWS CLI: $(/usr/local/bin/aws --version)"
-          echo "kubectl: $(/usr/local/bin/kubectl version --client -o yaml | grep gitVersion)"
-          echo "helm: $(helm version --short)"
-          echo "eksctl: $(eksctl version)"
-          echo "k9s: $(k9s version --short 2>/dev/null || echo 'installed')"
-          echo "stern: $(stern --version 2>/dev/null || echo 'installed')"
-          echo "kubectx: $(which kubectx)"
-          echo "kubens: $(which kubens)"
-          echo "yq: $(yq --version)"
-          echo "istioctl: $(istioctl version --remote=false 2>/dev/null || echo 'installed')"
-          echo "velero: $(velero version --client-only 2>/dev/null | head -1 || echo 'installed')"
-          echo ""
-
-          # Signal completion
-          echo "=== Bastion Setup Complete: $(date) ===" | tee /tmp/bastion-setup-complete
+          echo "=== Bastion Ready for SSM Tunneling: $(date) ==="
 
       Tags:
         - Key: Name

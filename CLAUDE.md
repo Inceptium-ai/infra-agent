@@ -60,12 +60,46 @@ This is an AI-powered Infrastructure Agent for managing AWS EKS clusters with NI
 
 ## Quick Reference
 
+### Platform Documentation (`docs/security-observability/`)
+
 | Document | Purpose |
 |----------|---------|
-| `docs/architecture.md` | System architecture, components, NIST controls |
-| `docs/access-urls.md` | **All access URLs and instructions** |
-| `docs/dev-vs-prod-decisions.md` | Infrastructure comparison (Dev vs Prod vs AWS) |
-| `docs/gitlab.md` | GitLab deployment documentation |
+| `docs/security-observability/architecture.md` | EKS cluster, VPC, Istio, SigNoz observability |
+| `docs/security-observability/security.md` | NIST 800-53 compliance, security controls |
+| `docs/security-observability/access-guide.md` | **All access URLs and instructions** |
+| `docs/security-observability/decisions.md` | Platform choices (SigNoz vs LGTM, etc.) |
+| `docs/security-observability/lessons-learned.md` | Infrastructure lessons (Istio, StatefulSets, etc.) |
+
+### Agent Documentation (`docs/infra-agent/`)
+
+| Document | Purpose |
+|----------|---------|
+| `docs/infra-agent/architecture.md` | Agent architecture, 4-agent pipeline, MCP |
+| `docs/infra-agent/user-guide.md` | How to use the CLI, chat commands, examples |
+| `docs/infra-agent/requirements.md` | Agent functional requirements (AGT-*) |
+| `docs/infra-agent/knowledge-base.md` | **Known AWS/K8s limitations, patterns, troubleshooting** |
+| `docs/infra-agent/lessons-learned.md` | Agent development lessons |
+
+## Infra-Agent Architecture Summary
+
+The AI agent consists of 8 specialized agents, all with access to AWS and Git MCP tools:
+
+| Agent | Purpose | MCP Tools |
+|-------|---------|-----------|
+| ChatAgent | Orchestrator - routes queries to appropriate handlers | AWS + Git (dynamic) |
+| PlanningAgent | Generates requirements and acceptance criteria | AWS + Git |
+| IaCAgent | Modifies CloudFormation/Helm, commits, pushes, creates PRs | AWS + Git |
+| ReviewAgent | Runs cfn-guard, cfn-lint, kube-linter, security scans | AWS + Git |
+| DeployValidateAgent | Deploys and runs acceptance tests | AWS + Git |
+| InvestigationAgent | Diagnoses pod/service/node issues | AWS + Git |
+| AuditAgent | Compliance checks, drift detection | AWS + Git |
+| K8sAgent | Kubernetes queries | AWS + Git |
+
+**MCP Tools Available:**
+- `aws_api_call(service, operation, parameters)` - Any boto3 operation
+- `list_aws_services()`, `list_service_operations(service)` - Discovery
+- `git_read_file()`, `git_list_files()`, `git_get_iac_files()` - Repository access
+- `git_compare_with_deployed()` - Drift detection
 
 ## EKS Cluster Access (CRITICAL)
 
@@ -623,6 +657,80 @@ k8sclusterreceiver provides:
 - Container: `k8s.container.restarts`, `k8s.container.ready`
 
 Labels: `k8s.cluster.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.node.name`
+
+### MCP (Model Context Protocol) for AWS and Git Access (2026-01-19)
+
+**Addition:** Full AWS and Git access via MCP tools for comprehensive drift detection and infrastructure queries.
+
+**Components:**
+- `src/infra_agent/mcp/aws_server.py` - FastMCP server with generic boto3 wrapper
+- `src/infra_agent/mcp/git_server.py` - GitHub/GitLab access for IaC source of truth
+- `src/infra_agent/mcp/client.py` - LangChain tool adapters
+
+**Key Tools:**
+| Tool | Purpose |
+|------|---------|
+| `aws_api_call(service, operation, parameters)` | Execute ANY boto3 operation |
+| `git_read_file(repo, path, ref)` | Read IaC files from Git |
+| `git_get_iac_files(repo)` | Discover all CloudFormation/Helm files |
+| `git_compare_with_deployed(repo, path, content)` | Compare Git vs AWS state |
+
+**Usage:**
+```bash
+# Via CLI
+infra-agent exec "list all running EC2 instances" -e dev
+infra-agent exec "show CloudFormation stacks" -e dev
+infra-agent exec "check for drift between Git and AWS" -e dev
+
+# MCP server standalone
+infra-agent mcp-server -t stdio
+```
+
+**Environment Variables Required:**
+- `GITHUB_TOKEN` or `GH_TOKEN` - for GitHub access
+- AWS credentials via standard credential chain
+
+### Chat UI Progress Feedback (2026-01-19)
+
+**Issue:** Long-running operations (30-60s LLM calls) showed no progress, causing users to think the system hung.
+
+**Solution:** Added real-time progress feedback using Rich's Live display:
+- Progress updates during LLM reasoning iterations
+- Tool call announcements with parameters
+- Tool result summaries
+- Elapsed time tracking
+
+**New Chat Commands:**
+| Command | Description |
+|---------|-------------|
+| `/status` | Show all agent tasks (running/completed/failed) |
+| `/help` | Show available commands |
+| `/clear` | Clear screen |
+
+**Files Changed:**
+- `src/infra_agent/agents/base.py` - Added `ProgressCallback` type and callback support in `invoke_with_tools`
+- `src/infra_agent/agents/chat/agent.py` - Added task tracking, progress display, `/status` command
+
+### Intent Classification - Exact Word Matching (2026-01-19)
+
+**Issue:** Queries like "check what is deployed" incorrectly triggered the DEPLOY pipeline because "deployed" contains "deploy" as substring.
+
+**Root Cause:** Using `"deploy" in user_input.lower()` matches substrings.
+
+**Solution:** Use regex word boundaries for exact matching:
+```python
+import re
+words = set(re.findall(r'\b\w+\b', user_input.lower()))
+
+# Correct: exact word match
+if words & {"deploy", "release", "rollout"}:
+    return OperationType.DEPLOY
+
+# Wrong: substring match
+if "deploy" in user_input.lower():  # Matches "deployed", "deployment", etc.
+```
+
+**Rule:** Always use word boundary matching (`\b`) for intent classification to avoid false positives.
 
 ## NEVER do these
 
