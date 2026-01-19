@@ -56,9 +56,9 @@ class OperationType(str, Enum):
 class Environment(str, Enum):
     """Deployment environments."""
 
-    DEV = "DEV"
-    TST = "TST"
-    PRD = "PRD"
+    DEV = "dev"
+    TST = "tst"
+    PRD = "prd"
 
 
 class ValidationResult(BaseModel):
