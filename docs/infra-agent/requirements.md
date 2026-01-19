@@ -20,7 +20,7 @@ This document defines the functional requirements for the AI Infrastructure Agen
 
 ---
 
-## 2. Chat Agent / Orchestrator Requirements (AGT-010 to AGT-019)
+## 2. Chat Agent / Orchestrator Requirements (AGT-010 to AGT-022)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
@@ -34,45 +34,48 @@ This document defines the functional requirements for the AI Infrastructure Agen
 | AGT-017 | Orchestrator SHALL route drift queries to combined Git+AWS tools | Must | Implemented | `_handle_drift_query()` |
 | AGT-018 | Orchestrator SHALL avoid duplicate tool registration | Must | Implemented | Check `_tool_map` |
 | AGT-019 | Orchestrator SHALL load tools dynamically based on query type | Should | Implemented | Lazy loading |
+| AGT-020 | CLI SHALL support arrow key navigation in input | Must | Implemented | `import readline` |
+| AGT-021 | CLI SHALL support command history (up/down arrows) | Should | Implemented | `import readline` |
+| AGT-022 | CLI SHALL support standard line editing (Home, End, Ctrl+A/E/W/K) | Should | Implemented | `import readline` |
 
 ---
 
-## 3. Planning Agent Requirements (AGT-020 to AGT-029)
+## 3. Planning Agent Requirements (AGT-025 to AGT-032)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-020 | Planning Agent SHALL generate requirements from user request | Must | Implemented | `agents/planning/agent.py` |
-| AGT-021 | Planning Agent SHALL generate testable acceptance criteria | Must | Implemented | `AcceptanceCriteria` model |
-| AGT-022 | Planning Agent SHALL identify files to modify | Must | Implemented | `FileToModify` model |
-| AGT-023 | Planning Agent SHALL map requirements to NIST controls | Should | Implemented | `Requirement.nist_controls` |
-| AGT-024 | Planning Agent SHALL assess impact level (low/medium/high) | Must | Implemented | `PlanningOutput.estimated_impact` |
-| AGT-025 | Planning Agent SHALL flag PRD changes as requiring approval | Must | Implemented | `PlanningOutput.requires_approval` |
-| AGT-026 | Planning Agent SHALL estimate monthly cost impact | Should | Implemented | `estimated_monthly_cost` |
-| AGT-027 | Planning Agent SHALL output structured YAML (`requirements.yaml`) | Must | Implemented | Pydantic serialization |
+| AGT-025 | Planning Agent SHALL generate requirements from user request | Must | Implemented | `agents/planning/agent.py` |
+| AGT-026 | Planning Agent SHALL generate testable acceptance criteria | Must | Implemented | `AcceptanceCriteria` model |
+| AGT-027 | Planning Agent SHALL identify files to modify | Must | Implemented | `FileToModify` model |
+| AGT-028 | Planning Agent SHALL map requirements to NIST controls | Should | Implemented | `Requirement.nist_controls` |
+| AGT-029 | Planning Agent SHALL assess impact level (low/medium/high) | Must | Implemented | `PlanningOutput.estimated_impact` |
+| AGT-030 | Planning Agent SHALL flag PRD changes as requiring approval | Must | Implemented | `PlanningOutput.requires_approval` |
+| AGT-031 | Planning Agent SHALL estimate monthly cost impact | Should | Implemented | `estimated_monthly_cost` |
+| AGT-032 | Planning Agent SHALL output structured YAML (`requirements.yaml`) | Must | Implemented | Pydantic serialization |
 
 ---
 
-## 4. IaC Agent Requirements (AGT-030 to AGT-046)
+## 4. IaC Agent Requirements (AGT-035 to AGT-051)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-030 | IaC Agent SHALL implement changes based on PlanningOutput | Must | Implemented | `agents/iac/agent.py` |
-| AGT-031 | IaC Agent SHALL modify CloudFormation templates | Must | Implemented | `_generate_file_change()` |
-| AGT-032 | IaC Agent SHALL modify Helm values files | Must | Implemented | `_generate_file_change()` |
-| AGT-033 | IaC Agent SHALL self-validate with cfn-lint before Review | Must | Implemented | `_validate_with_cfn_lint()` |
-| AGT-034 | IaC Agent SHALL self-validate with kube-linter before Review | Must | Implemented | `_validate_with_kube_linter()` |
-| AGT-035 | IaC Agent SHALL create feature branch per environment | Must | Implemented | `GitBranchConfig` |
-| AGT-036 | IaC Agent SHALL commit changes with Co-Authored-By | Must | Implemented | `_create_git_commit()` |
-| AGT-037 | IaC Agent SHALL push to remote origin | Must | Implemented | `_create_git_commit()` |
-| AGT-038 | IaC Agent SHALL create pull request | Should | Implemented | `_create_pull_request()` |
-| AGT-039 | IaC Agent SHALL retry on validation failure (max 3 times) | Must | Implemented | Retry loop |
-| AGT-040 | IaC Agent SHALL display progress during file processing | Must | Implemented | `_console.print()` |
-| AGT-041 | IaC Agent SHALL display progress during LLM invocation | Must | Implemented | `progress_callback` |
-| AGT-042 | IaC Agent SHALL timeout LLM calls after 120 seconds | Must | Implemented | `asyncio.wait_for()` |
-| AGT-043 | IaC Agent SHALL truncate large files (>2000 chars) for prompts | Should | Implemented | Content truncation |
-| AGT-044 | IaC Agent SHALL report explicit errors (no silent failures) | Must | Implemented | Exception handling |
-| AGT-045 | IaC Agent SHALL validate empty/minimal LLM responses | Should | Implemented | Content length check |
-| AGT-046 | IaC Agent SHALL show lint validation results in progress | Should | Implemented | `_console.print()` |
+| AGT-035 | IaC Agent SHALL implement changes based on PlanningOutput | Must | Implemented | `agents/iac/agent.py` |
+| AGT-036 | IaC Agent SHALL modify CloudFormation templates | Must | Implemented | `_generate_file_change()` |
+| AGT-037 | IaC Agent SHALL modify Helm values files | Must | Implemented | `_generate_file_change()` |
+| AGT-038 | IaC Agent SHALL self-validate with cfn-lint before Review | Must | Implemented | `_validate_with_cfn_lint()` |
+| AGT-039 | IaC Agent SHALL self-validate with kube-linter before Review | Must | Implemented | `_validate_with_kube_linter()` |
+| AGT-040 | IaC Agent SHALL create feature branch per environment | Must | Implemented | `GitBranchConfig` |
+| AGT-041 | IaC Agent SHALL commit changes with Co-Authored-By | Must | Implemented | `_create_git_commit()` |
+| AGT-042 | IaC Agent SHALL push to remote origin | Must | Implemented | `_create_git_commit()` |
+| AGT-043 | IaC Agent SHALL create pull request | Should | Implemented | `_create_pull_request()` |
+| AGT-044 | IaC Agent SHALL retry on validation failure (max 3 times) | Must | Implemented | Retry loop |
+| AGT-045 | IaC Agent SHALL display progress during file processing | Must | Implemented | `_console.print()` |
+| AGT-046 | IaC Agent SHALL display progress during LLM invocation | Must | Implemented | `progress_callback` |
+| AGT-047 | IaC Agent SHALL timeout LLM calls after 120 seconds | Must | Implemented | `asyncio.wait_for()` |
+| AGT-048 | IaC Agent SHALL truncate large files (>2000 chars) for prompts | Should | Implemented | Content truncation |
+| AGT-049 | IaC Agent SHALL report explicit errors (no silent failures) | Must | Implemented | Exception handling |
+| AGT-050 | IaC Agent SHALL validate empty/minimal LLM responses | Should | Implemented | Content length check |
+| AGT-051 | IaC Agent SHALL show lint validation results in progress | Should | Implemented | `_console.print()` |
 
 ### 4.1 IaC Agent Progress Output
 
@@ -208,4 +211,5 @@ This prevents "silent hangs" during long-running LLM operations.
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-19 | AI Agent | Initial agent requirements document |
-| 1.1 | 2026-01-19 | AI Agent | Added IaC Agent progress requirements (AGT-040 to AGT-046), renumbered sections to avoid conflicts |
+| 1.1 | 2026-01-19 | AI Agent | Added IaC Agent progress requirements, renumbered sections |
+| 1.2 | 2026-01-19 | AI Agent | Added CLI keyboard navigation requirements (AGT-020 to AGT-022) |

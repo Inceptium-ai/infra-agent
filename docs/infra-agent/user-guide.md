@@ -199,6 +199,22 @@ The chat interface provides special commands (prefixed with `/`) for session man
 | `/clear` | Clear the screen |
 | `exit`, `quit`, `q` | Exit the chat session |
 
+### Keyboard Shortcuts
+
+The CLI supports standard readline keyboard shortcuts for editing input:
+
+| Shortcut | Action |
+|----------|--------|
+| **Left/Right Arrow** | Move cursor within line |
+| **Up/Down Arrow** | Navigate command history |
+| **Home** or **Ctrl+A** | Move to start of line |
+| **End** or **Ctrl+E** | Move to end of line |
+| **Ctrl+W** | Delete word backward |
+| **Ctrl+K** | Delete from cursor to end of line |
+| **Ctrl+U** | Delete from cursor to start of line |
+| **Ctrl+L** | Clear screen |
+| **Ctrl+C** | Cancel current input / Exit |
+
 ### Progress Feedback
 
 When the agent is processing your request, you'll see real-time progress updates:
