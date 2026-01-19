@@ -13,6 +13,24 @@ from langchain_core.tools import tool
 
 
 # =============================================================================
+# boto3 Helper
+# =============================================================================
+
+
+def _get_boto3_client(service_name: str):
+    """Get a boto3 client for the specified service.
+
+    Uses the default credential chain:
+    1. Environment variables
+    2. ~/.aws/credentials
+    3. ~/.aws/config
+    4. ECS/EC2 instance role
+    """
+    import boto3
+    return boto3.client(service_name)
+
+
+# =============================================================================
 # Compliance Audit Tools
 # =============================================================================
 
@@ -88,40 +106,38 @@ def _check_sc28_encryption_at_rest() -> str:
     """Check SC-28: Protection of Information at Rest."""
     try:
         results = []
+        ec2 = _get_boto3_client("ec2")
+        s3 = _get_boto3_client("s3")
 
         # Check EBS encryption
-        ebs_result = subprocess.run(
-            ["aws", "ec2", "describe-volumes", "--query",
-             "Volumes[?Encrypted==`false`].VolumeId", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if ebs_result.returncode == 0:
-            unencrypted = json.loads(ebs_result.stdout)
+        try:
+            response = ec2.describe_volumes()
+            volumes = response.get("Volumes", [])
+            unencrypted = [v["VolumeId"] for v in volumes if not v.get("Encrypted", False)]
             if unencrypted:
                 results.append(f"EBS: FAILED - {len(unencrypted)} unencrypted volumes")
             else:
                 results.append("EBS: PASSED - All volumes encrypted")
+        except Exception as e:
+            results.append(f"EBS: ERROR - {str(e)}")
 
         # Check S3 bucket encryption
-        buckets_result = subprocess.run(
-            ["aws", "s3api", "list-buckets", "--query", "Buckets[].Name", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if buckets_result.returncode == 0:
-            buckets = json.loads(buckets_result.stdout)
+        try:
+            response = s3.list_buckets()
+            buckets = [b["Name"] for b in response.get("Buckets", [])]
             unencrypted_buckets = []
             for bucket in buckets[:5]:  # Check first 5 buckets
-                enc_result = subprocess.run(
-                    ["aws", "s3api", "get-bucket-encryption", "--bucket", bucket],
-                    capture_output=True, text=True, timeout=10
-                )
-                if enc_result.returncode != 0:
+                try:
+                    s3.get_bucket_encryption(Bucket=bucket)
+                except Exception:
                     unencrypted_buckets.append(bucket)
 
             if unencrypted_buckets:
                 results.append(f"S3: PARTIAL - {len(unencrypted_buckets)} buckets without encryption")
             else:
                 results.append("S3: PASSED - Checked buckets have encryption")
+        except Exception as e:
+            results.append(f"S3: ERROR - {str(e)}")
 
         status = "PASSED" if all("PASSED" in r for r in results) else "PARTIAL"
         return f"SC-28: {status}\n" + "\n".join(results)
@@ -133,16 +149,9 @@ def _check_sc28_encryption_at_rest() -> str:
 def _check_ac2_account_management() -> str:
     """Check AC-2: Account Management (Cognito)."""
     try:
-        # Check for Cognito user pools
-        result = subprocess.run(
-            ["aws", "cognito-idp", "list-user-pools", "--max-results", "10", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if result.returncode != 0:
-            return f"AC-2: UNKNOWN - Cannot check Cognito: {result.stderr}"
-
-        pools = json.loads(result.stdout).get("UserPools", [])
+        cognito = _get_boto3_client("cognito-idp")
+        response = cognito.list_user_pools(MaxResults=10)
+        pools = response.get("UserPools", [])
 
         if not pools:
             return "AC-2: FAILED - No Cognito user pools configured"
@@ -160,28 +169,20 @@ def _check_ac2_account_management() -> str:
 def _check_ac6_least_privilege() -> str:
     """Check AC-6: Least Privilege (IAM wildcard policies)."""
     try:
-        # List roles and check for wildcard policies
-        result = subprocess.run(
-            ["aws", "iam", "list-roles", "--query", "Roles[].RoleName", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if result.returncode != 0:
-            return f"AC-6: UNKNOWN - Cannot list IAM roles: {result.stderr}"
-
-        roles = json.loads(result.stdout)
+        iam = _get_boto3_client("iam")
+        response = iam.list_roles()
+        roles = [r["RoleName"] for r in response.get("Roles", [])]
         wildcard_roles = []
 
         for role in roles[:10]:  # Check first 10 roles
-            policy_result = subprocess.run(
-                ["aws", "iam", "list-attached-role-policies", "--role-name", role, "--output", "json"],
-                capture_output=True, text=True, timeout=10
-            )
-            if policy_result.returncode == 0:
-                policies = json.loads(policy_result.stdout).get("AttachedPolicies", [])
+            try:
+                policy_response = iam.list_attached_role_policies(RoleName=role)
+                policies = policy_response.get("AttachedPolicies", [])
                 for policy in policies:
                     if "AdministratorAccess" in policy.get("PolicyName", ""):
                         wildcard_roles.append(role)
+            except Exception:
+                pass
 
         if wildcard_roles:
             return f"AC-6: PARTIAL - {len(wildcard_roles)} role(s) with admin access: {', '.join(wildcard_roles)}"
@@ -196,37 +197,36 @@ def _check_au2_audit_events() -> str:
     """Check AU-2: Audit Events (logging enabled)."""
     try:
         results = []
+        cloudtrail = _get_boto3_client("cloudtrail")
+        ec2 = _get_boto3_client("ec2")
 
         # Check CloudTrail
-        trail_result = subprocess.run(
-            ["aws", "cloudtrail", "describe-trails", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if trail_result.returncode == 0:
-            trails = json.loads(trail_result.stdout).get("trailList", [])
+        try:
+            response = cloudtrail.describe_trails()
+            trails = response.get("trailList", [])
             if trails:
                 results.append(f"CloudTrail: PASSED - {len(trails)} trail(s) configured")
             else:
                 results.append("CloudTrail: FAILED - No trails configured")
+        except Exception as e:
+            results.append(f"CloudTrail: ERROR - {str(e)}")
 
         # Check VPC Flow Logs (check one VPC)
-        vpc_result = subprocess.run(
-            ["aws", "ec2", "describe-vpcs", "--query", "Vpcs[0].VpcId", "--output", "text"],
-            capture_output=True, text=True, timeout=30
-        )
-        if vpc_result.returncode == 0:
-            vpc_id = vpc_result.stdout.strip()
-            flow_result = subprocess.run(
-                ["aws", "ec2", "describe-flow-logs", "--filter",
-                 f"Name=resource-id,Values={vpc_id}", "--output", "json"],
-                capture_output=True, text=True, timeout=30
-            )
-            if flow_result.returncode == 0:
-                flows = json.loads(flow_result.stdout).get("FlowLogs", [])
+        try:
+            vpc_response = ec2.describe_vpcs()
+            vpcs = vpc_response.get("Vpcs", [])
+            if vpcs:
+                vpc_id = vpcs[0].get("VpcId")
+                flow_response = ec2.describe_flow_logs(
+                    Filters=[{"Name": "resource-id", "Values": [vpc_id]}]
+                )
+                flows = flow_response.get("FlowLogs", [])
                 if flows:
                     results.append(f"VPC Flow Logs: PASSED - Enabled for {vpc_id}")
                 else:
                     results.append(f"VPC Flow Logs: FAILED - Not enabled for {vpc_id}")
+        except Exception as e:
+            results.append(f"VPC Flow Logs: ERROR - {str(e)}")
 
         status = "PASSED" if all("PASSED" in r for r in results) else "PARTIAL"
         return f"AU-2: {status}\n" + "\n".join(results)
@@ -238,24 +238,20 @@ def _check_au2_audit_events() -> str:
 def _check_au3_audit_content() -> str:
     """Check AU-3: Content of Audit Records (K8s audit logs)."""
     try:
-        # Check if EKS cluster has audit logging enabled
-        result = subprocess.run(
-            ["aws", "eks", "describe-cluster", "--name", "infra-agent-dev-cluster",
-             "--query", "cluster.logging.clusterLogging[?enabled==`true`].types",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
+        eks = _get_boto3_client("eks")
+        response = eks.describe_cluster(name="infra-agent-dev-cluster")
+        cluster = response.get("cluster", {})
+        logging_config = cluster.get("logging", {}).get("clusterLogging", [])
 
-        if result.returncode != 0:
-            return f"AU-3: UNKNOWN - Cannot check EKS logging: {result.stderr}"
+        enabled_types = []
+        for config in logging_config:
+            if config.get("enabled"):
+                enabled_types.extend(config.get("types", []))
 
-        log_types = json.loads(result.stdout)
-        flat_types = [t for sublist in log_types for t in sublist] if log_types else []
-
-        if "audit" in flat_types:
-            return f"AU-3: PASSED - EKS audit logging enabled. Types: {', '.join(flat_types)}"
+        if "audit" in enabled_types:
+            return f"AU-3: PASSED - EKS audit logging enabled. Types: {', '.join(enabled_types)}"
         else:
-            return f"AU-3: PARTIAL - Audit logging may not be enabled. Active types: {', '.join(flat_types)}"
+            return f"AU-3: PARTIAL - Audit logging may not be enabled. Active types: {', '.join(enabled_types)}"
 
     except Exception as e:
         return f"AU-3: ERROR - {str(e)}"
@@ -264,18 +260,11 @@ def _check_au3_audit_content() -> str:
 def _check_cm2_baseline_configuration() -> str:
     """Check CM-2: Baseline Configuration (IaC)."""
     try:
-        # Check for CloudFormation stacks
-        result = subprocess.run(
-            ["aws", "cloudformation", "list-stacks",
-             "--stack-status-filter", "CREATE_COMPLETE", "UPDATE_COMPLETE",
-             "--query", "StackSummaries[].StackName", "--output", "json"],
-            capture_output=True, text=True, timeout=30
+        cfn = _get_boto3_client("cloudformation")
+        response = cfn.list_stacks(
+            StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"]
         )
-
-        if result.returncode != 0:
-            return f"CM-2: UNKNOWN - Cannot list CloudFormation stacks: {result.stderr}"
-
-        stacks = json.loads(result.stdout)
+        stacks = [s["StackName"] for s in response.get("StackSummaries", [])]
 
         if stacks:
             return f"CM-2: PASSED - {len(stacks)} CloudFormation stack(s) managing infrastructure"
@@ -371,48 +360,34 @@ def encryption_audit() -> str:
 
     # Check EBS encryption
     try:
-        ebs_result = subprocess.run(
-            ["aws", "ec2", "describe-volumes",
-             "--query", "Volumes[].{ID:VolumeId,Encrypted:Encrypted,KmsKeyId:KmsKeyId}",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if ebs_result.returncode == 0:
-            volumes = json.loads(ebs_result.stdout)
-            encrypted = sum(1 for v in volumes if v.get("Encrypted"))
-            total = len(volumes)
-            results.append(f"EBS Volumes: {encrypted}/{total} encrypted")
+        ec2 = _get_boto3_client("ec2")
+        response = ec2.describe_volumes()
+        volumes = response.get("Volumes", [])
+        encrypted = sum(1 for v in volumes if v.get("Encrypted"))
+        total = len(volumes)
+        results.append(f"EBS Volumes: {encrypted}/{total} encrypted")
     except Exception as e:
         results.append(f"EBS: Error - {str(e)}")
 
     # Check RDS encryption
     try:
-        rds_result = subprocess.run(
-            ["aws", "rds", "describe-db-instances",
-             "--query", "DBInstances[].{ID:DBInstanceIdentifier,Encrypted:StorageEncrypted}",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if rds_result.returncode == 0:
-            dbs = json.loads(rds_result.stdout)
-            if dbs:
-                encrypted = sum(1 for db in dbs if db.get("Encrypted"))
-                results.append(f"RDS Instances: {encrypted}/{len(dbs)} encrypted")
-            else:
-                results.append("RDS: No instances found")
+        rds = _get_boto3_client("rds")
+        response = rds.describe_db_instances()
+        dbs = response.get("DBInstances", [])
+        if dbs:
+            encrypted = sum(1 for db in dbs if db.get("StorageEncrypted"))
+            results.append(f"RDS Instances: {encrypted}/{len(dbs)} encrypted")
+        else:
+            results.append("RDS: No instances found")
     except Exception as e:
         results.append(f"RDS: Error - {str(e)}")
 
     # Check Secrets Manager encryption (all secrets are encrypted by default)
     try:
-        secrets_result = subprocess.run(
-            ["aws", "secretsmanager", "list-secrets",
-             "--query", "SecretList[].Name", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-        if secrets_result.returncode == 0:
-            secrets = json.loads(secrets_result.stdout)
-            results.append(f"Secrets Manager: {len(secrets)} secrets (all encrypted by default)")
+        secretsmanager = _get_boto3_client("secretsmanager")
+        response = secretsmanager.list_secrets()
+        secrets = response.get("SecretList", [])
+        results.append(f"Secrets Manager: {len(secrets)} secrets (all encrypted by default)")
     except Exception as e:
         results.append(f"Secrets Manager: Error - {str(e)}")
 
@@ -480,41 +455,36 @@ def iam_audit() -> str:
     """
     try:
         results = []
+        iam = _get_boto3_client("iam")
 
         # Check for roles with admin access
-        roles_result = subprocess.run(
-            ["aws", "iam", "list-roles", "--query", "Roles[].RoleName", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if roles_result.returncode == 0:
-            roles = json.loads(roles_result.stdout)
+        try:
+            response = iam.list_roles()
+            roles = [r["RoleName"] for r in response.get("Roles", [])]
             admin_roles = []
 
             for role in roles[:20]:  # Check first 20 roles
-                attached = subprocess.run(
-                    ["aws", "iam", "list-attached-role-policies", "--role-name", role,
-                     "--query", "AttachedPolicies[].PolicyName", "--output", "json"],
-                    capture_output=True, text=True, timeout=10
-                )
-                if attached.returncode == 0:
-                    policies = json.loads(attached.stdout)
+                try:
+                    attached = iam.list_attached_role_policies(RoleName=role)
+                    policies = [p["PolicyName"] for p in attached.get("AttachedPolicies", [])]
                     if any("Admin" in p for p in policies):
                         admin_roles.append(role)
+                except Exception:
+                    pass
 
             results.append(f"Roles with Admin policies: {len(admin_roles)}")
             for role in admin_roles[:5]:
                 results.append(f"  - {role}")
+        except Exception as e:
+            results.append(f"Roles: Error - {str(e)}")
 
         # Check for users with console access
-        users_result = subprocess.run(
-            ["aws", "iam", "list-users", "--query", "Users[].UserName", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if users_result.returncode == 0:
-            users = json.loads(users_result.stdout)
+        try:
+            response = iam.list_users()
+            users = response.get("Users", [])
             results.append(f"\nIAM Users: {len(users)}")
+        except Exception as e:
+            results.append(f"Users: Error - {str(e)}")
 
         return "IAM Audit Results:\n" + "\n".join(results)
 
@@ -531,23 +501,20 @@ def public_access_check() -> str:
     """
     try:
         results = []
+        s3 = _get_boto3_client("s3")
+        ec2 = _get_boto3_client("ec2")
 
         # Check S3 public access
-        buckets_result = subprocess.run(
-            ["aws", "s3api", "list-buckets", "--query", "Buckets[].Name", "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if buckets_result.returncode == 0:
-            buckets = json.loads(buckets_result.stdout)
+        try:
+            response = s3.list_buckets()
+            buckets = [b["Name"] for b in response.get("Buckets", [])]
             public_buckets = []
 
             for bucket in buckets[:10]:
-                pab_result = subprocess.run(
-                    ["aws", "s3api", "get-public-access-block", "--bucket", bucket],
-                    capture_output=True, text=True, timeout=10
-                )
-                if pab_result.returncode != 0:  # No public access block = potentially public
+                try:
+                    s3.get_public_access_block(Bucket=bucket)
+                except Exception:
+                    # No public access block = potentially public
                     public_buckets.append(bucket)
 
             if public_buckets:
@@ -556,18 +523,23 @@ def public_access_check() -> str:
                     results.append(f"  - {b}")
             else:
                 results.append("S3: All checked buckets have public access block")
+        except Exception as e:
+            results.append(f"S3: Error - {str(e)}")
 
         # Check security groups with 0.0.0.0/0
-        sg_result = subprocess.run(
-            ["aws", "ec2", "describe-security-groups",
-             "--query", "SecurityGroups[?IpPermissions[?contains(IpRanges[].CidrIp, '0.0.0.0/0')]].GroupId",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if sg_result.returncode == 0:
-            open_sgs = json.loads(sg_result.stdout)
-            results.append(f"\nSecurity groups with 0.0.0.0/0 ingress: {len(open_sgs)}")
+        try:
+            response = ec2.describe_security_groups()
+            sgs = response.get("SecurityGroups", [])
+            open_sgs = []
+            for sg in sgs:
+                for perm in sg.get("IpPermissions", []):
+                    for ip_range in perm.get("IpRanges", []):
+                        if ip_range.get("CidrIp") == "0.0.0.0/0":
+                            open_sgs.append(sg["GroupId"])
+                            break
+            results.append(f"\nSecurity groups with 0.0.0.0/0 ingress: {len(set(open_sgs))}")
+        except Exception as e:
+            results.append(f"Security Groups: Error - {str(e)}")
 
         return "Public Access Audit:\n" + "\n".join(results)
 
@@ -849,35 +821,30 @@ def unattached_resources() -> str:
     """
     try:
         results = []
+        ec2 = _get_boto3_client("ec2")
 
         # Check for unattached EBS volumes
-        ebs_result = subprocess.run(
-            ["aws", "ec2", "describe-volumes",
-             "--filters", "Name=status,Values=available",
-             "--query", "Volumes[].{ID:VolumeId,Size:Size,AZ:AvailabilityZone}",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if ebs_result.returncode == 0:
-            volumes = json.loads(ebs_result.stdout)
+        try:
+            response = ec2.describe_volumes(
+                Filters=[{"Name": "status", "Values": ["available"]}]
+            )
+            volumes = response.get("Volumes", [])
             results.append(f"Unattached EBS volumes: {len(volumes)}")
             for vol in volumes[:5]:
-                results.append(f"  - {vol['ID']} ({vol['Size']}GB in {vol['AZ']})")
+                results.append(f"  - {vol['VolumeId']} ({vol['Size']}GB in {vol['AvailabilityZone']})")
+        except Exception as e:
+            results.append(f"EBS: Error - {str(e)}")
 
         # Check for unassociated Elastic IPs
-        eip_result = subprocess.run(
-            ["aws", "ec2", "describe-addresses",
-             "--query", "Addresses[?AssociationId==null].{IP:PublicIp,AllocId:AllocationId}",
-             "--output", "json"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if eip_result.returncode == 0:
-            eips = json.loads(eip_result.stdout)
-            results.append(f"\nUnassociated Elastic IPs: {len(eips)}")
-            for eip in eips[:5]:
-                results.append(f"  - {eip['IP']} ({eip['AllocId']})")
+        try:
+            response = ec2.describe_addresses()
+            addresses = response.get("Addresses", [])
+            unassociated = [a for a in addresses if not a.get("AssociationId")]
+            results.append(f"\nUnassociated Elastic IPs: {len(unassociated)}")
+            for eip in unassociated[:5]:
+                results.append(f"  - {eip.get('PublicIp', 'N/A')} ({eip.get('AllocationId', 'N/A')})")
+        except Exception as e:
+            results.append(f"Elastic IPs: Error - {str(e)}")
 
         return "Unattached Resources:\n" + "\n".join(results)
 
@@ -901,47 +868,35 @@ def cfn_drift(stack_name: Optional[str] = None) -> str:
         Drift detection results
     """
     try:
+        import time
+        cfn = _get_boto3_client("cloudformation")
+
         if stack_name:
             stacks = [stack_name]
         else:
             # List all active stacks
-            list_result = subprocess.run(
-                ["aws", "cloudformation", "list-stacks",
-                 "--stack-status-filter", "CREATE_COMPLETE", "UPDATE_COMPLETE",
-                 "--query", "StackSummaries[].StackName", "--output", "json"],
-                capture_output=True, text=True, timeout=30
+            response = cfn.list_stacks(
+                StackStatusFilter=["CREATE_COMPLETE", "UPDATE_COMPLETE"]
             )
-            if list_result.returncode != 0:
-                return f"Error listing stacks: {list_result.stderr}"
-            stacks = json.loads(list_result.stdout)
+            stacks = [s["StackName"] for s in response.get("StackSummaries", [])]
 
         results = []
         for stack in stacks[:5]:  # Check first 5 stacks
-            # Start drift detection
-            detect_result = subprocess.run(
-                ["aws", "cloudformation", "detect-stack-drift", "--stack-name", stack],
-                capture_output=True, text=True, timeout=30
-            )
-
-            if detect_result.returncode == 0:
-                drift_id = json.loads(detect_result.stdout).get("StackDriftDetectionId")
+            try:
+                # Start drift detection
+                detect_response = cfn.detect_stack_drift(StackName=stack)
+                drift_id = detect_response.get("StackDriftDetectionId")
 
                 # Wait briefly and check status
-                import time
                 time.sleep(2)
 
-                status_result = subprocess.run(
-                    ["aws", "cloudformation", "describe-stack-drift-detection-status",
-                     "--stack-drift-detection-id", drift_id, "--output", "json"],
-                    capture_output=True, text=True, timeout=30
+                status_response = cfn.describe_stack_drift_detection_status(
+                    StackDriftDetectionId=drift_id
                 )
-
-                if status_result.returncode == 0:
-                    status = json.loads(status_result.stdout)
-                    drift_status = status.get("StackDriftStatus", "UNKNOWN")
-                    results.append(f"{stack}: {drift_status}")
-            else:
-                results.append(f"{stack}: Error - {detect_result.stderr[:50]}")
+                drift_status = status_response.get("StackDriftStatus", "UNKNOWN")
+                results.append(f"{stack}: {drift_status}")
+            except Exception as e:
+                results.append(f"{stack}: Error - {str(e)[:50]}")
 
         return "CloudFormation Drift Detection:\n" + "\n".join(results)
 

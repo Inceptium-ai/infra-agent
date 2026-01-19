@@ -367,8 +367,21 @@ def service_endpoints(namespace: str = "default", service_name: Optional[str] = 
 
 
 # =============================================================================
-# AWS Investigation Tools
+# AWS Investigation Tools (using boto3)
 # =============================================================================
+
+
+def _get_boto3_client(service_name: str):
+    """Get a boto3 client for the specified service.
+
+    Uses the default credential chain:
+    1. Environment variables
+    2. ~/.aws/credentials
+    3. ~/.aws/config
+    4. ECS/EC2 instance role
+    """
+    import boto3
+    return boto3.client(service_name)
 
 
 @tool
@@ -382,17 +395,14 @@ def ec2_status(instance_ids: Optional[str] = None) -> str:
         EC2 instance status including health checks
     """
     try:
-        cmd = ["aws", "ec2", "describe-instance-status", "--include-all-instances", "--output", "json"]
+        ec2 = _get_boto3_client("ec2")
+
+        kwargs = {"IncludeAllInstances": True}
         if instance_ids:
-            cmd.extend(["--instance-ids"] + instance_ids.split(","))
+            kwargs["InstanceIds"] = instance_ids.split(",")
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            return f"Error: {result.stderr}"
-
-        data = json.loads(result.stdout)
-        statuses = data.get("InstanceStatuses", [])
+        response = ec2.describe_instance_status(**kwargs)
+        statuses = response.get("InstanceStatuses", [])
 
         if not statuses:
             return "No instances found or no status available"
@@ -412,8 +422,6 @@ def ec2_status(instance_ids: Optional[str] = None) -> str:
 
         return "\n".join(summary)
 
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -430,48 +438,36 @@ def eks_nodegroup_status(cluster_name: str, nodegroup_name: Optional[str] = None
         Node group status including health and scaling
     """
     try:
-        if nodegroup_name:
-            cmd = ["aws", "eks", "describe-nodegroup",
-                   "--cluster-name", cluster_name,
-                   "--nodegroup-name", nodegroup_name,
-                   "--output", "json"]
-        else:
-            cmd = ["aws", "eks", "list-nodegroups",
-                   "--cluster-name", cluster_name,
-                   "--output", "json"]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            return f"Error: {result.stderr}"
-
-        data = json.loads(result.stdout)
+        eks = _get_boto3_client("eks")
 
         if nodegroup_name:
-            ng = data.get("nodegroup", {})
+            response = eks.describe_nodegroup(
+                clusterName=cluster_name,
+                nodegroupName=nodegroup_name
+            )
+            ng = response.get("nodegroup", {})
             return _format_nodegroup(ng)
         else:
-            nodegroups = data.get("nodegroups", [])
+            response = eks.list_nodegroups(clusterName=cluster_name)
+            nodegroups = response.get("nodegroups", [])
+
             if not nodegroups:
                 return f"No node groups found in cluster {cluster_name}"
 
             summaries = []
             for ng_name in nodegroups:
-                ng_result = subprocess.run(
-                    ["aws", "eks", "describe-nodegroup",
-                     "--cluster-name", cluster_name,
-                     "--nodegroup-name", ng_name,
-                     "--output", "json"],
-                    capture_output=True, text=True, timeout=30
-                )
-                if ng_result.returncode == 0:
-                    ng = json.loads(ng_result.stdout).get("nodegroup", {})
+                try:
+                    ng_response = eks.describe_nodegroup(
+                        clusterName=cluster_name,
+                        nodegroupName=ng_name
+                    )
+                    ng = ng_response.get("nodegroup", {})
                     summaries.append(_format_nodegroup(ng))
+                except Exception:
+                    summaries.append(f"NodeGroup: {ng_name}\n  Error: Could not describe")
 
             return "\n\n".join(summaries)
 
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -515,28 +511,23 @@ def cloudwatch_logs(log_group: str, filter_pattern: str = "", hours: int = 1) ->
     """
     try:
         import time
+        logs = _get_boto3_client("logs")
+
         end_time = int(time.time() * 1000)
         start_time = end_time - (hours * 60 * 60 * 1000)
 
-        cmd = [
-            "aws", "logs", "filter-log-events",
-            "--log-group-name", log_group,
-            "--start-time", str(start_time),
-            "--end-time", str(end_time),
-            "--limit", "50",
-            "--output", "json"
-        ]
+        kwargs = {
+            "logGroupName": log_group,
+            "startTime": start_time,
+            "endTime": end_time,
+            "limit": 50,
+        }
 
         if filter_pattern:
-            cmd.extend(["--filter-pattern", filter_pattern])
+            kwargs["filterPattern"] = filter_pattern
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            return f"Error: {result.stderr}"
-
-        data = json.loads(result.stdout)
-        events = data.get("events", [])
+        response = logs.filter_log_events(**kwargs)
+        events = response.get("events", [])
 
         if not events:
             return f"No log events found matching criteria in {log_group}"
@@ -549,8 +540,6 @@ def cloudwatch_logs(log_group: str, filter_pattern: str = "", hours: int = 1) ->
 
         return "\n".join(summary)
 
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -566,17 +555,14 @@ def ebs_status(volume_ids: Optional[str] = None) -> str:
         EBS volume status including attachment state
     """
     try:
-        cmd = ["aws", "ec2", "describe-volumes", "--output", "json"]
+        ec2 = _get_boto3_client("ec2")
+
+        kwargs = {}
         if volume_ids:
-            cmd.extend(["--volume-ids"] + volume_ids.split(","))
+            kwargs["VolumeIds"] = volume_ids.split(",")
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-        if result.returncode != 0:
-            return f"Error: {result.stderr}"
-
-        data = json.loads(result.stdout)
-        volumes = data.get("Volumes", [])
+        response = ec2.describe_volumes(**kwargs)
+        volumes = response.get("Volumes", [])
 
         if not volumes:
             return "No volumes found"
@@ -599,8 +585,6 @@ def ebs_status(volume_ids: Optional[str] = None) -> str:
 
         return "\n".join(summary)
 
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out"
     except Exception as e:
         return f"Error: {str(e)}"
 
