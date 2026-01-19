@@ -997,6 +997,18 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 ```
 
 ### Agent Architecture
+
+The system uses a multi-agent architecture with intent-based routing. The Chat Agent acts as the orchestrator, routing requests to specialized agents based on user intent.
+
+**Intent Classification:**
+| Intent | Description | Agent(s) |
+|--------|-------------|----------|
+| `change` | Infrastructure changes | 4-Agent Pipeline (Planning → IaC → Review → Deploy) |
+| `query` | Information queries | K8s Agent |
+| `investigate` | Troubleshooting issues | Investigation Agent |
+| `audit` | Compliance/security/cost reviews | Audit Agent |
+| `conversation` | General questions | Chat Agent (direct) |
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                    LANGGRAPH STATE MACHINE                                   │
@@ -1006,29 +1018,135 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 │  │  • messages: List[BaseMessage]     • current_agent: str                             │   │
 │  │  • environment: DEV|TST|PRD        • cloudformation_templates: dict                 │   │
 │  │  • validation_results: dict        • eks_cluster_status: dict                       │   │
-│  │  • nist_compliance_status: dict    • audit_log: List[dict]                          │   │
-│  │  • mfa_verified: bool              • session_expiry: datetime                       │   │
+│  │  • nist_compliance_status: dict    • investigation_output_json: str                 │   │
+│  │  • audit_output_json: str          • session_expiry: datetime                       │   │
 │  └─────────────────────────────────────────────────────────────────────────────────────┘   │
 │                                           │                                                  │
 │                                           ▼                                                  │
 │  ┌────────────────────────────────────────────────────────────────────────────────────┐    │
 │  │                                  Chat Agent                                         │    │
-│  │                               (Supervisor Node)                                     │    │
-│  │  • Operator authentication        • Command parsing                                 │    │
-│  │  • Intent routing                 • Response aggregation                            │    │
+│  │                              (ORCHESTRATOR NODE)                                    │    │
+│  │  • Intent classification          • Command parsing                                 │    │
+│  │  • Agent routing                  • Response aggregation                            │    │
 │  └────────────────────────────────────────┬───────────────────────────────────────────┘    │
 │                                           │                                                  │
-│           ┌───────────┬───────────┬───────┴───────┬───────────┬───────────┐                │
-│           ▼           ▼           ▼               ▼           ▼           ▼                │
-│  ┌──────────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │  IaC Agent   │ │K8s Agent │ │ Deploy   │ │ Verify   │ │ Security │ │  Cost    │        │
-│  │              │ │          │ │  Agent   │ │  Agent   │ │  Agent   │ │  Agent   │        │
-│  │ • cfn-lint   │ │• kubectl │ │• GitHub  │ │• Drift   │ │• Trivy   │ │• Kubecost│        │
-│  │ • cfn-guard  │ │• helm    │ │  Actions │ │  detect  │ │• NIST    │ │• Reaper  │        │
-│  │ • ChangeSets │ │• Istio   │ │• B/G     │ │• Tests   │ │  checks  │ │          │        │
-│  └──────────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘        │
+│     ┌──────────────────┬──────────────────┼──────────────────┬──────────────────┐          │
+│     │                  │                  │                  │                  │          │
+│     ▼                  ▼                  ▼                  ▼                  ▼          │
+│  ┌──────────┐   ┌─────────────────────────────────────┐  ┌──────────┐   ┌──────────┐      │
+│  │ K8s      │   │     4-AGENT PIPELINE (change)       │  │Investig- │   │  Audit   │      │
+│  │ Agent    │   │                                     │  │ation     │   │  Agent   │      │
+│  │ (query)  │   │  Planning → IaC → Review → Deploy   │  │ Agent    │   │          │      │
+│  │          │   │                                     │  │          │   │          │      │
+│  │• kubectl │   │ ┌────────┐ ┌────────┐ ┌────────┐   │  │• K8s     │   │• NIST    │      │
+│  │• helm    │   │ │Planning│→│  IaC   │→│ Review │   │  │  diag    │   │  800-53  │      │
+│  │• status  │   │ │ Agent  │ │ Agent  │ │ Agent  │   │  │• AWS     │   │• Security│      │
+│  │          │   │ └────────┘ └────────┘ └───┬────┘   │  │  diag    │   │• Cost    │      │
+│  │          │   │                           │        │  │• SigNoz  │   │• Drift   │      │
+│  │          │   │                     ┌─────▼─────┐  │  │  query   │   │          │      │
+│  │          │   │                     │Deploy/Val │  │  │          │   │          │      │
+│  │          │   │                     │  Agent    │  │  │          │   │          │      │
+│  │          │   │                     └───────────┘  │  │          │   │          │      │
+│  └──────────┘   └─────────────────────────────────────┘  └──────────┘   └──────────┘      │
+│                                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │                              TOOL CAPABILITIES BY AGENT                              │  │
+│  ├─────────────────────────────────────────────────────────────────────────────────────┤  │
+│  │ K8s Agent:          kubectl, helm, node-status, pod-status, deployments, services   │  │
+│  │ Planning Agent:     generate_plan, validate_plan, estimate_impact, list_resources   │  │
+│  │ IaC Agent:          cfn-lint, cfn-guard, ChangeSets, generate_cfn, generate_helm    │  │
+│  │ Review Agent:       diff_analysis, security_review, compliance_check, cost_estimate │  │
+│  │ Deploy Agent:       cfn_deploy, helm_upgrade, validate_deployment, rollback         │  │
+│  │ Investigation:      pod_logs, events, describe, ec2_status, cloudwatch, signoz      │  │
+│  │ Audit Agent:        nist_checks, iam_audit, trivy_scan, kubecost, drift_detection   │  │
+│  └─────────────────────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**4-Agent Pipeline Detail:**
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            4-AGENT CHANGE PIPELINE                                          │
+│                                                                                             │
+│  User: "Add a new S3 bucket for logs"                                                       │
+│                     │                                                                       │
+│                     ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ PLANNING AGENT                                                                       │   │
+│  │ • Analyze request scope                                                              │   │
+│  │ • Identify required resources (CloudFormation, Helm, IAM)                           │   │
+│  │ • Generate implementation plan                                                       │   │
+│  │ • Output: planning_output.yaml                                                       │   │
+│  └─────────────────────────────────────────────────────────────────────────────────────┘   │
+│                     │                                                                       │
+│                     ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ IAC AGENT                                                                            │   │
+│  │ • Generate CloudFormation templates                                                  │   │
+│  │ • Generate Helm values files                                                         │   │
+│  │ • Run cfn-lint validation                                                            │   │
+│  │ • Run cfn-guard NIST compliance                                                      │   │
+│  │ • Output: iac_output.yaml, generated templates                                       │   │
+│  └─────────────────────────────────────────────────────────────────────────────────────┘   │
+│                     │                                                                       │
+│                     ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ REVIEW AGENT                                                                         │   │
+│  │ • Security review of generated code                                                  │   │
+│  │ • Compliance verification                                                            │   │
+│  │ • Cost impact estimation                                                             │   │
+│  │ • Approval gate (requires human approval for PRD)                                    │   │
+│  │ • Output: review_output.yaml                                                         │   │
+│  └─────────────────────────────────────────────────────────────────────────────────────┘   │
+│                     │                                                                       │
+│                     ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ DEPLOY/VALIDATE AGENT                                                                │   │
+│  │ • Execute CloudFormation deploy                                                      │   │
+│  │ • Execute Helm upgrade                                                               │   │
+│  │ • Validate deployment success                                                        │   │
+│  │ • Rollback on failure                                                                │   │
+│  │ • Output: deploy_output.yaml                                                         │   │
+│  └─────────────────────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Investigation Agent Tools (15 tools):**
+| Tool | Purpose | Source |
+|------|---------|--------|
+| `pod_health_check` | Pod status overview | kubectl |
+| `pod_logs` | Container logs | kubectl |
+| `pod_events` | Kubernetes events | kubectl |
+| `pod_describe` | Detailed pod info | kubectl |
+| `resource_usage` | CPU/Memory metrics | kubectl top |
+| `node_status` | Node health | kubectl |
+| `pvc_status` | PVC status | kubectl |
+| `service_endpoints` | Service endpoints | kubectl |
+| `ec2_status` | EC2 instance status | AWS API |
+| `eks_nodegroup_status` | Node group health | AWS API |
+| `cloudwatch_logs` | CloudWatch logs | AWS API |
+| `ebs_status` | EBS volume status | AWS API |
+| `signoz_metrics` | SigNoz metrics | SigNoz API |
+| `signoz_logs` | SigNoz logs | SigNoz API |
+| `signoz_traces` | SigNoz traces | SigNoz API |
+
+**Audit Agent Tools (14 tools):**
+| Tool | Purpose | Checks |
+|------|---------|--------|
+| `nist_sc8_check` | Transmission encryption | Istio mTLS |
+| `nist_sc28_check` | Encryption at rest | EBS/S3/RDS |
+| `nist_ac2_check` | Account management | IAM policies |
+| `nist_ac6_check` | Least privilege | Wildcard policies |
+| `nist_au2_check` | Audit logging | CloudWatch/FlowLogs |
+| `nist_au3_check` | Audit content | Log completeness |
+| `nist_cm2_check` | Baseline configuration | IaC compliance |
+| `nist_cm3_check` | Change control | Git workflow |
+| `nist_cp9_check` | Backup verification | Velero status |
+| `nist_ra5_check` | Vulnerability scans | Trivy results |
+| `iam_audit` | IAM policy review | AWS IAM |
+| `kubecost_query` | Cost analysis | Kubecost API |
+| `cfn_drift_detect` | CloudFormation drift | AWS CFN |
+| `helm_drift_detect` | Helm values drift | Helm diff |
 
 ### Data Flow Diagram
 ```
@@ -1038,57 +1156,57 @@ The bastion host uses **AWS Systems Manager Session Manager** instead of traditi
 │  ┌────────────┐                                                                              │
 │  │  Operator  │──── CLI Command ────►┌───────────────┐                                      │
 │  │            │                      │  Chat Agent   │                                      │
-│  │            │◄─── Response ────────│               │                                      │
+│  │            │◄─── Response ────────│  (Orchestr.)  │                                      │
 │  └────────────┘                      └───────┬───────┘                                      │
 │                                              │                                               │
-│                          ┌───────────────────┼───────────────────┐                          │
-│                          │                   │                   │                          │
-│                          ▼                   ▼                   ▼                          │
-│                   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                  │
-│                   │ CloudForm.  │     │    EKS      │     │  Bedrock    │                  │
-│                   │   Stacks    │     │   Cluster   │     │   Claude    │                  │
-│                   └──────┬──────┘     └──────┬──────┘     └─────────────┘                  │
-│                          │                   │                                               │
-│                          ▼                   ▼                                               │
-│                   ┌─────────────┐     ┌─────────────┐                                       │
-│                   │    AWS      │     │ Kubernetes  │                                       │
-│                   │  Resources  │     │   Pods      │                                       │
-│                   └─────────────┘     └──────┬──────┘                                       │
-│                                              │                                               │
-│           ┌──────────────┬──────────────┬──────────────┐                                   │
-│           ▼              ▼              ▼              ▼                                   │
-│     ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐                            │
-│     │   Loki    │  │Prometheus │  │   Tempo   │  │   Kiali   │                            │
-│     │  (Logs)   │  │ (Scraper) │  │ (Traces)  │  │(Traffic)  │                            │
-│     └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └───────────┘                            │
-│           │              │              │                                                  │
-│           │        ┌─────▼─────┐        │                                                  │
-│           │        │   Mimir   │        │                                                  │
-│           │        │Distributor│        │                                                  │
-│           │        └─────┬─────┘        │                                                  │
-│           │              │              │                                                  │
-│           │        ┌─────▼─────┐        │                                                  │
-│           │        │Kafka (WAL)│        │                                                  │
-│           │        └─────┬─────┘        │                                                  │
-│           │              │              │                                                  │
-│           │        ┌─────▼─────┐        │                                                  │
-│           │        │   Mimir   │        │                                                  │
-│           │        │ Ingester  │        │                                                  │
-│           │        └─────┬─────┘        │                                                  │
-│           │              │              │                                                  │
-│           └──────────────┼──────────────┘                                                  │
-│                          ▼                                                                 │
-│                   ┌─────────────┐                                                          │
-│                   │     S3      │                                                          │
-│                   │  (Storage)  │                                                          │
-│                   └──────┬──────┘                                                          │
-│                          │                                                                 │
-│                   ┌──────▼──────┐                                                          │
-│                   │   Grafana   │                                                          │
-│                   │ (Dashboard) │                                                          │
-│                   └─────────────┘                                                          │
+│           ┌──────────────────────────────────┼──────────────────────────────────┐           │
+│           │                    │             │             │                    │           │
+│           ▼                    ▼             ▼             ▼                    ▼           │
+│    ┌─────────────┐      ┌───────────┐ ┌───────────┐ ┌───────────┐      ┌─────────────┐     │
+│    │ CloudForm.  │      │   EKS     │ │  Bedrock  │ │  SigNoz   │      │   Kubecost  │     │
+│    │   Stacks    │      │  Cluster  │ │  Claude   │ │   API     │      │     API     │     │
+│    └──────┬──────┘      └─────┬─────┘ └───────────┘ └─────┬─────┘      └──────┬──────┘     │
+│           │                   │                           │                   │            │
+│           ▼                   ▼                           │                   │            │
+│    ┌─────────────┐      ┌─────────────┐                  │                   │            │
+│    │    AWS      │      │ Kubernetes  │                  │                   │            │
+│    │  Resources  │      │    Pods     │                  │                   │            │
+│    └─────────────┘      └──────┬──────┘                  │                   │            │
+│                                │                          │                   │            │
+│                    ┌───────────┴───────────┐              │                   │            │
+│                    ▼                       ▼              │                   │            │
+│             ┌─────────────┐         ┌─────────────┐       │                   │            │
+│             │    OTEL     │         │   Kiali     │       │                   │            │
+│             │  Collector  │         │ (Traffic)   │       │                   │            │
+│             └──────┬──────┘         └─────────────┘       │                   │            │
+│                    │                                      │                   │            │
+│                    │    ┌─────────────────────────────────┘                   │            │
+│                    │    │                                                     │            │
+│                    ▼    ▼                                                     │            │
+│             ┌─────────────┐                                                   │            │
+│             │ ClickHouse  │◄──────────────────────────────────────────────────┘            │
+│             │  (Storage)  │     Cost metrics from Kubecost                                 │
+│             └──────┬──────┘                                                                │
+│                    │                                                                        │
+│                    ▼                                                                        │
+│             ┌─────────────┐                                                                │
+│             │   SigNoz    │                                                                │
+│             │ (Dashboard) │                                                                │
+│             │ Metrics +   │                                                                │
+│             │ Logs +      │                                                                │
+│             │ Traces      │                                                                │
+│             └─────────────┘                                                                │
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Observability Stack (SigNoz):**
+| Component | Purpose | Storage |
+|-----------|---------|---------|
+| OTEL Collector | Receives metrics, logs, traces via OTLP | - |
+| ClickHouse | Column-oriented database for all telemetry | EBS (gp3) |
+| SigNoz Frontend | Unified dashboard for metrics, logs, traces | - |
+| Kiali | Istio service mesh traffic visualization | Uses Prometheus |
+| Prometheus (minimal) | Istio metrics for Kiali only | Ephemeral |
 
 ---
 

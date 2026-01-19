@@ -10,15 +10,35 @@ from pydantic import BaseModel, Field
 
 
 class AgentType(str, Enum):
-    """Types of specialized agents."""
+    """Types of specialized agents.
+
+    The 4-agent pipeline architecture:
+    - CHAT: Orchestrator that routes requests and manages pipeline flow
+    - PLANNING: Analyzes requests, generates requirements and acceptance criteria
+    - IAC: Implements infrastructure changes based on planning output
+    - REVIEW: Validates IaC changes against compliance and security rules
+    - DEPLOY_VALIDATE: Executes deployments and validates against acceptance criteria
+
+    Additional agents for direct queries:
+    - K8S: Direct Kubernetes queries (not part of change pipeline)
+    - COST: Standalone cost queries (not part of change pipeline)
+    - INVESTIGATION: Diagnoses issues, troubleshoots problems
+    - AUDIT: Compliance, security, cost, and drift audits
+    """
 
     CHAT = "chat"
+    PLANNING = "planning"
     IAC = "iac"
+    REVIEW = "review"
+    DEPLOY_VALIDATE = "deploy_validate"
     K8S = "k8s"
+    COST = "cost"
+    INVESTIGATION = "investigation"
+    AUDIT = "audit"
+    # Legacy types (kept for backward compatibility)
     DEPLOYMENT = "deployment"
     VERIFICATION = "verification"
     SECURITY = "security"
-    COST = "cost"
 
 
 class OperationType(str, Enum):
@@ -150,6 +170,40 @@ class InfraAgentState(BaseModel):
     # Error handling
     last_error: Optional[str] = None
 
+    # Pipeline state (4-agent architecture)
+    current_pipeline_stage: Optional[str] = Field(
+        default=None,
+        description="Current stage: planning, iac, review, deploy_validate, completed, failed",
+    )
+    active_request_id: Optional[str] = Field(
+        default=None, description="ID of the current pipeline request"
+    )
+    pipeline_retry_count: int = Field(
+        default=0, description="Number of retries in current pipeline execution"
+    )
+    max_pipeline_retries: int = Field(default=3, description="Maximum pipeline retries")
+
+    # Serialized pipeline outputs (stored as JSON strings to avoid circular imports)
+    # These are populated during pipeline execution and used for context passing
+    planning_output_json: Optional[str] = Field(
+        default=None, description="Serialized PlanningOutput from Planning Agent"
+    )
+    iac_output_json: Optional[str] = Field(
+        default=None, description="Serialized IaCOutput from IaC Agent"
+    )
+    review_output_json: Optional[str] = Field(
+        default=None, description="Serialized ReviewOutput from Review Agent"
+    )
+    deployment_output_json: Optional[str] = Field(
+        default=None, description="Serialized DeploymentOutput from Deploy Agent"
+    )
+    investigation_output_json: Optional[str] = Field(
+        default=None, description="Serialized InvestigationOutput from Investigation Agent"
+    )
+    audit_output_json: Optional[str] = Field(
+        default=None, description="Serialized AuditOutput from Audit Agent"
+    )
+
     def add_audit_entry(
         self,
         agent: AgentType,
@@ -195,6 +249,36 @@ class InfraAgentState(BaseModel):
         if self.check_mfa_required() and not self.mfa_verified:
             return False
         return True
+
+    def start_pipeline(self, request_id: str) -> None:
+        """Initialize a new pipeline execution."""
+        self.active_request_id = request_id
+        self.current_pipeline_stage = "planning"
+        self.pipeline_retry_count = 0
+        self.planning_output_json = None
+        self.iac_output_json = None
+        self.review_output_json = None
+        self.deployment_output_json = None
+        self.last_error = None
+
+    def advance_pipeline(self, next_stage: str) -> None:
+        """Advance to the next pipeline stage."""
+        self.current_pipeline_stage = next_stage
+
+    def retry_pipeline(self) -> bool:
+        """Attempt to retry the pipeline. Returns True if retry is allowed."""
+        if self.pipeline_retry_count < self.max_pipeline_retries:
+            self.pipeline_retry_count += 1
+            return True
+        return False
+
+    def complete_pipeline(self, success: bool) -> None:
+        """Mark the pipeline as completed."""
+        self.current_pipeline_stage = "completed" if success else "failed"
+
+    def is_pipeline_active(self) -> bool:
+        """Check if a pipeline is currently in progress."""
+        return self.current_pipeline_stage in ["planning", "iac", "review", "deploy_validate"]
 
     class Config:
         """Pydantic configuration."""
