@@ -22,10 +22,21 @@ A comprehensive guide for operators to interact with the AI Infrastructure Agent
 
 ### Prerequisites
 
-**1. Install infra-agent:**
+**1. Install infra-agent (using virtual environment):**
 ```bash
 cd /Users/ymuwakki/infra-agent
+
+# Create and activate virtual environment (one-time)
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install infra-agent in editable mode
 pip install -e .
+```
+
+**Note:** Always activate the venv before running infra-agent:
+```bash
+source /Users/ymuwakki/infra-agent/.venv/bin/activate
 ```
 
 **2. Start SSM tunnel (required for EKS access):**
