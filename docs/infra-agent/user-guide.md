@@ -551,13 +551,18 @@ Approve this plan? [y/n]:
 
 **Step 2: IaC Agent**
 ```
-Step 2: IaC Agent implementing changes...
+IaC Agent: Processing 1 file(s)...
+
+(1/1) Processing: infra/helm/values/signoz/values.yaml
+  Reading infra/helm/values/signoz/values.yaml...
+  Generating changes with LLM...
+  Reasoning... (iteration 1/3)
+  Wrote 1250 chars to infra/helm/values/signoz/values.yaml
+  Running validation...
+  kube-linter passed
 
 Modified: infra/helm/values/signoz/values.yaml
   - frontend.replicaCount: 1 → 3
-
-Self-validation:
-  - kube-linter: PASSED (0 errors, 0 warnings)
 
 Git Operations:
   - Branch: feat/dev/req-f7e8d9c0
@@ -565,6 +570,8 @@ Git Operations:
   - Pushed to: origin/feat/dev/req-f7e8d9c0
   - PR #42 created: https://github.com/org/infra-agent/pull/42
 ```
+
+**Note:** The IaC Agent now shows real-time progress during file processing to prevent "silent hangs". If processing takes longer than 120 seconds, it will timeout with an error message.
 
 **Step 3: Review Agent**
 ```

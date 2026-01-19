@@ -52,7 +52,7 @@ This document defines the functional requirements for the AI Infrastructure Agen
 
 ---
 
-## 4. IaC Agent Requirements (AGT-030 to AGT-039)
+## 4. IaC Agent Requirements (AGT-030 to AGT-046)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
@@ -66,60 +66,86 @@ This document defines the functional requirements for the AI Infrastructure Agen
 | AGT-037 | IaC Agent SHALL push to remote origin | Must | Implemented | `_create_git_commit()` |
 | AGT-038 | IaC Agent SHALL create pull request | Should | Implemented | `_create_pull_request()` |
 | AGT-039 | IaC Agent SHALL retry on validation failure (max 3 times) | Must | Implemented | Retry loop |
+| AGT-040 | IaC Agent SHALL display progress during file processing | Must | Implemented | `_console.print()` |
+| AGT-041 | IaC Agent SHALL display progress during LLM invocation | Must | Implemented | `progress_callback` |
+| AGT-042 | IaC Agent SHALL timeout LLM calls after 120 seconds | Must | Implemented | `asyncio.wait_for()` |
+| AGT-043 | IaC Agent SHALL truncate large files (>2000 chars) for prompts | Should | Implemented | Content truncation |
+| AGT-044 | IaC Agent SHALL report explicit errors (no silent failures) | Must | Implemented | Exception handling |
+| AGT-045 | IaC Agent SHALL validate empty/minimal LLM responses | Should | Implemented | Content length check |
+| AGT-046 | IaC Agent SHALL show lint validation results in progress | Should | Implemented | `_console.print()` |
+
+### 4.1 IaC Agent Progress Output
+
+The IaC Agent provides real-time progress feedback during file processing:
+
+```
+IaC Agent: Processing 1 file(s)...
+
+(1/1) Processing: infra/cloudformation/stacks/00-foundation/bastion.yaml
+  Reading infra/cloudformation/stacks/00-foundation/bastion.yaml...
+  File truncated for prompt (12000 -> 2000 chars)
+  Generating changes with LLM...
+  Reasoning... (iteration 1/3)
+  Wrote 3500 chars to infra/cloudformation/...
+  Running validation...
+  cfn-lint passed
+```
+
+This prevents "silent hangs" during long-running LLM operations.
 
 ---
 
-## 5. Review Agent Requirements (AGT-040 to AGT-049)
+## 5. Review Agent Requirements (AGT-050 to AGT-057)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-040 | Review Agent SHALL run cfn-guard for NIST compliance | Must | Implemented | `agents/review/agent.py` |
-| AGT-041 | Review Agent SHALL run cfn-lint for CloudFormation best practices | Must | Implemented | `_run_cfn_lint()` |
-| AGT-042 | Review Agent SHALL run kube-linter for Kubernetes best practices | Must | Implemented | `_run_kube_linter()` |
-| AGT-043 | Review Agent SHALL scan for exposed secrets | Must | Implemented | `_security_scan()` |
-| AGT-044 | Review Agent SHALL estimate cost impact | Should | Implemented | `_estimate_cost()` |
-| AGT-045 | Review Agent SHALL return PASS/FAIL/NEEDS_REVISION status | Must | Implemented | `ReviewStatus` enum |
-| AGT-046 | Review Agent SHALL provide detailed findings for failures | Must | Implemented | `ReviewOutput.findings` |
-| AGT-047 | Review Agent SHALL output structured YAML (`review.yaml`) | Must | Implemented | Pydantic serialization |
+| AGT-050 | Review Agent SHALL run cfn-guard for NIST compliance | Must | Implemented | `agents/review/agent.py` |
+| AGT-051 | Review Agent SHALL run cfn-lint for CloudFormation best practices | Must | Implemented | `_run_cfn_lint()` |
+| AGT-052 | Review Agent SHALL run kube-linter for Kubernetes best practices | Must | Implemented | `_run_kube_linter()` |
+| AGT-053 | Review Agent SHALL scan for exposed secrets | Must | Implemented | `_security_scan()` |
+| AGT-054 | Review Agent SHALL estimate cost impact | Should | Implemented | `_estimate_cost()` |
+| AGT-055 | Review Agent SHALL return PASS/FAIL/NEEDS_REVISION status | Must | Implemented | `ReviewStatus` enum |
+| AGT-056 | Review Agent SHALL provide detailed findings for failures | Must | Implemented | `ReviewOutput.findings` |
+| AGT-057 | Review Agent SHALL output structured YAML (`review.yaml`) | Must | Implemented | Pydantic serialization |
 
 ---
 
-## 6. Deploy & Validate Agent Requirements (AGT-050 to AGT-059)
+## 6. Deploy & Validate Agent Requirements (AGT-060 to AGT-066)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-050 | Deploy Agent SHALL execute CloudFormation deployments | Must | Implemented | `agents/deploy_validate/agent.py` |
-| AGT-051 | Deploy Agent SHALL execute Helm upgrades | Must | Implemented | `_deploy_helm()` |
-| AGT-052 | Deploy Agent SHALL run acceptance criteria tests | Must | Implemented | `_run_validation()` |
-| AGT-053 | Deploy Agent SHALL report SUCCESS/FAILURE status | Must | Implemented | `ValidationOutput.status` |
-| AGT-054 | Deploy Agent SHALL capture deployment duration | Should | Implemented | `deployment_duration_seconds` |
-| AGT-055 | Deploy Agent SHALL output structured YAML (`validation.yaml`) | Must | Implemented | Pydantic serialization |
-| AGT-056 | Deploy Agent SHALL skip deployment in dry-run mode | Must | Implemented | `dry_run` check |
+| AGT-060 | Deploy Agent SHALL execute CloudFormation deployments | Must | Implemented | `agents/deploy_validate/agent.py` |
+| AGT-061 | Deploy Agent SHALL execute Helm upgrades | Must | Implemented | `_deploy_helm()` |
+| AGT-062 | Deploy Agent SHALL run acceptance criteria tests | Must | Implemented | `_run_validation()` |
+| AGT-063 | Deploy Agent SHALL report SUCCESS/FAILURE status | Must | Implemented | `ValidationOutput.status` |
+| AGT-064 | Deploy Agent SHALL capture deployment duration | Should | Implemented | `deployment_duration_seconds` |
+| AGT-065 | Deploy Agent SHALL output structured YAML (`validation.yaml`) | Must | Implemented | Pydantic serialization |
+| AGT-066 | Deploy Agent SHALL skip deployment in dry-run mode | Must | Implemented | `dry_run` check |
 
 ---
 
-## 7. MCP Tool Requirements (AGT-060 to AGT-079)
+## 7. MCP Tool Requirements (AGT-070 to AGT-083)
 
 ### 7.1 MCP Tool Availability
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-060 | Agent SHALL support generic AWS API calls via boto3 | Must | Implemented | `mcp/aws_server.py` |
-| AGT-061 | Agent SHALL support reading files from GitHub repositories | Must | Implemented | `mcp/git_server.py` |
-| AGT-062 | Agent SHALL support reading files from GitLab repositories | Should | Implemented | `mcp/git_server.py` |
-| AGT-063 | Agent SHALL support IaC drift detection (Git vs AWS) | Must | Implemented | `git_compare_with_deployed` |
-| AGT-064 | Agent SHALL discover IaC files in repositories | Should | Implemented | `git_get_iac_files` |
-| AGT-065 | Agent SHALL list available AWS services | Should | Implemented | `list_aws_services` |
-| AGT-066 | Agent SHALL list operations for AWS services | Should | Implemented | `list_service_operations` |
+| AGT-070 | Agent SHALL support generic AWS API calls via boto3 | Must | Implemented | `mcp/aws_server.py` |
+| AGT-071 | Agent SHALL support reading files from GitHub repositories | Must | Implemented | `mcp/git_server.py` |
+| AGT-072 | Agent SHALL support reading files from GitLab repositories | Should | Implemented | `mcp/git_server.py` |
+| AGT-073 | Agent SHALL support IaC drift detection (Git vs AWS) | Must | Implemented | `git_compare_with_deployed` |
+| AGT-074 | Agent SHALL discover IaC files in repositories | Should | Implemented | `git_get_iac_files` |
+| AGT-075 | Agent SHALL list available AWS services | Should | Implemented | `list_aws_services` |
+| AGT-076 | Agent SHALL list operations for AWS services | Should | Implemented | `list_service_operations` |
 
 ### 7.2 MCP Tools in All Agents
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-070 | ALL pipeline agents SHALL have access to AWS MCP tools | Must | Implemented | `_register_mcp_tools()` |
-| AGT-071 | ALL pipeline agents SHALL have access to Git MCP tools | Must | Implemented | `_register_mcp_tools()` |
-| AGT-072 | MCP tool registration SHALL be fault-tolerant (silent fail) | Must | Implemented | try/except in init |
-| AGT-073 | ChatAgent SHALL load MCP tools dynamically based on query | Should | Implemented | `_handle_*_query()` |
+| AGT-080 | ALL pipeline agents SHALL have access to AWS MCP tools | Must | Implemented | `_register_mcp_tools()` |
+| AGT-081 | ALL pipeline agents SHALL have access to Git MCP tools | Must | Implemented | `_register_mcp_tools()` |
+| AGT-082 | MCP tool registration SHALL be fault-tolerant (silent fail) | Must | Implemented | try/except in init |
+| AGT-083 | ChatAgent SHALL load MCP tools dynamically based on query | Should | Implemented | `_handle_*_query()` |
 
 **Agent MCP Tool Status:**
 
@@ -149,31 +175,31 @@ This document defines the functional requirements for the AI Infrastructure Agen
 
 ---
 
-## 8. Investigation Agent Requirements (AGT-070 to AGT-079)
+## 8. Investigation Agent Requirements (AGT-090 to AGT-097)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-070 | Investigation Agent SHALL diagnose pod health issues | Must | Implemented | `pod_health_check` tool |
-| AGT-071 | Investigation Agent SHALL retrieve pod logs | Must | Implemented | `pod_logs` tool |
-| AGT-072 | Investigation Agent SHALL check Kubernetes events | Must | Implemented | `pod_events` tool |
-| AGT-073 | Investigation Agent SHALL query SigNoz metrics | Should | Implemented | `signoz_metrics` tool |
-| AGT-074 | Investigation Agent SHALL query SigNoz logs | Should | Implemented | `signoz_logs` tool |
-| AGT-075 | Investigation Agent SHALL query AWS resource status | Should | Implemented | `ec2_status` tool |
-| AGT-076 | Investigation Agent SHALL produce root cause analysis | Must | Implemented | Output format |
-| AGT-077 | Investigation Agent SHALL recommend remediation steps | Must | Implemented | Output format |
+| AGT-090 | Investigation Agent SHALL diagnose pod health issues | Must | Implemented | `pod_health_check` tool |
+| AGT-091 | Investigation Agent SHALL retrieve pod logs | Must | Implemented | `pod_logs` tool |
+| AGT-092 | Investigation Agent SHALL check Kubernetes events | Must | Implemented | `pod_events` tool |
+| AGT-093 | Investigation Agent SHALL query SigNoz metrics | Should | Implemented | `signoz_metrics` tool |
+| AGT-094 | Investigation Agent SHALL query SigNoz logs | Should | Implemented | `signoz_logs` tool |
+| AGT-095 | Investigation Agent SHALL query AWS resource status | Should | Implemented | `ec2_status` tool |
+| AGT-096 | Investigation Agent SHALL produce root cause analysis | Must | Implemented | Output format |
+| AGT-097 | Investigation Agent SHALL recommend remediation steps | Must | Implemented | Output format |
 
 ---
 
-## 9. Audit Agent Requirements (AGT-080 to AGT-089)
+## 9. Audit Agent Requirements (AGT-100 to AGT-105)
 
 | ID | Requirement | Priority | Status | Implementation |
 |----|-------------|----------|--------|----------------|
-| AGT-080 | Audit Agent SHALL check NIST 800-53 compliance | Must | Implemented | Compliance tools |
-| AGT-081 | Audit Agent SHALL run security scans | Must | Implemented | Security tools |
-| AGT-082 | Audit Agent SHALL identify cost optimization opportunities | Should | Implemented | Cost tools |
-| AGT-083 | Audit Agent SHALL detect configuration drift | Must | Implemented | Drift tools |
-| AGT-084 | Audit Agent SHALL score compliance (0-100%) | Should | Implemented | `compliance_score` |
-| AGT-085 | Audit Agent SHALL list findings with severity | Must | Implemented | `findings` list |
+| AGT-100 | Audit Agent SHALL check NIST 800-53 compliance | Must | Implemented | Compliance tools |
+| AGT-101 | Audit Agent SHALL run security scans | Must | Implemented | Security tools |
+| AGT-102 | Audit Agent SHALL identify cost optimization opportunities | Should | Implemented | Cost tools |
+| AGT-103 | Audit Agent SHALL detect configuration drift | Must | Implemented | Drift tools |
+| AGT-104 | Audit Agent SHALL score compliance (0-100%) | Should | Implemented | `compliance_score` |
+| AGT-105 | Audit Agent SHALL list findings with severity | Must | Implemented | `findings` list |
 
 ---
 
@@ -182,3 +208,4 @@ This document defines the functional requirements for the AI Infrastructure Agen
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-19 | AI Agent | Initial agent requirements document |
+| 1.1 | 2026-01-19 | AI Agent | Added IaC Agent progress requirements (AGT-040 to AGT-046), renumbered sections to avoid conflicts |
