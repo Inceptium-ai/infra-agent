@@ -22,15 +22,47 @@ A comprehensive guide for operators to interact with the AI Infrastructure Agent
 
 ### Prerequisites
 
+**1. Install infra-agent:**
 ```bash
-# 1. Start SSM tunnel (keep running in separate terminal)
-./scripts/tunnel.sh
+cd /Users/ymuwakki/infra-agent
+pip install -e .
+```
 
-# 2. Configure kubectl (one-time after tunnel starts)
+**2. Start SSM tunnel (required for EKS access):**
+
+The EKS cluster has a **private endpoint only** - there is no public API access. The SSM tunnel creates a secure connection through the bastion host so the agent can run `kubectl` and `helm` commands against the cluster.
+
+```bash
+# Keep this running in a separate terminal
+./scripts/tunnel.sh
+```
+
+**3. Configure kubectl (one-time after tunnel starts):**
+```bash
 aws eks update-kubeconfig --name infra-agent-dev-cluster --region us-east-1
 sed -i.bak 's|https://C13DEB3971BF51477027AF0BEF0B1D0D.yl4.us-east-1.eks.amazonaws.com|https://localhost:6443|' ~/.kube/config
 kubectl config set-cluster arn:aws:eks:us-east-1:340752837296:cluster/infra-agent-dev-cluster --insecure-skip-tls-verify=true
 ```
+
+**4. Configure environment (optional):**
+```bash
+# Copy example and set your values
+cp .env.example .env
+
+# Required for Investigation/Audit agents to query SigNoz:
+# SIGNOZ_API_KEY=your-signoz-api-key
+```
+
+### Why the Tunnel is Required
+
+| Agent | Why Tunnel Needed |
+|-------|-------------------|
+| Investigation Agent | Runs `kubectl logs`, `kubectl describe`, `kubectl get events` |
+| Audit Agent | Runs `kubectl get networkpolicies`, checks Trivy reports, Velero status |
+| K8s Agent | Runs `kubectl get pods`, `helm list`, status queries |
+| Deploy Agent | Runs `helm upgrade`, validates deployments |
+
+Without the tunnel, any command that touches the Kubernetes API will fail with connection errors.
 
 ### Running the Agent
 
