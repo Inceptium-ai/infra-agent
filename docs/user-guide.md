@@ -1018,6 +1018,104 @@ You: "Check service endpoints in feature-x namespace"
 
 ---
 
+## Troubleshooting
+
+### "SSM Tunnel Required" Error
+
+**Problem:** Agent shows "connection refused" or "SSM Tunnel Required" when running queries.
+
+**Cause:** The EKS cluster has a private endpoint. kubectl commands need the tunnel.
+
+**Solution:**
+```bash
+# Start the tunnel in a separate terminal
+./scripts/tunnel.sh
+
+# Keep it running while using infra-agent
+```
+
+### "Unable to locate credentials" or AWS Access Errors
+
+**Problem:** Agent says it cannot access AWS or credentials not found.
+
+**Cause:** AWS credentials are not configured in your shell.
+
+**Solution:**
+
+1. **Check current credentials:**
+   ```bash
+   aws sts get-caller-identity
+   ```
+
+2. **If that fails, configure credentials:**
+   ```bash
+   # Option 1: Configure default profile
+   aws configure
+
+   # Option 2: Use SSO
+   aws sso login --profile your-profile
+   export AWS_PROFILE=your-profile
+
+   # Option 3: Export environment variables
+   export AWS_ACCESS_KEY_ID=your-key
+   export AWS_SECRET_ACCESS_KEY=your-secret
+   export AWS_REGION=us-east-1
+   ```
+
+3. **Run infra-agent again:**
+   ```bash
+   infra-agent chat -e dev
+   ```
+
+**AWS Credential Chain (checked in order):**
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | Environment variables | `AWS_ACCESS_KEY_ID` |
+| 2 | Credentials file | `~/.aws/credentials` |
+| 3 | Config file (SSO/role) | `~/.aws/config` |
+| 4 | ECS task role | Automatic in ECS |
+| 5 | EC2 instance role | Automatic on EC2 |
+
+### Agent Not Routing to Investigation/Audit
+
+**Problem:** Agent responds conversationally instead of running investigation tools.
+
+**Cause:** Your prompt may not include the right keywords.
+
+**Solution:** Use explicit keywords:
+```bash
+# Investigation - use these words:
+"investigate", "debug", "troubleshoot", "why is", "diagnose"
+
+# Audit - use these words:
+"audit", "compliance", "security scan", "cost analysis", "drift"
+
+# Examples that WILL trigger investigation:
+"Why are pods restarting in signoz?"       # ✓ "why" triggers investigate
+"Investigate high memory usage"             # ✓ "investigate" triggers investigate
+
+# Examples that WON'T trigger investigation:
+"Tell me about pod restarts"                # ✗ No trigger word
+"What's wrong with signoz?"                 # ✗ Too vague
+```
+
+### Bedrock/LLM Errors
+
+**Problem:** Agent fails with Bedrock or model errors.
+
+**Cause:** Missing Bedrock permissions or wrong region.
+
+**Solution:**
+```bash
+# Check Bedrock access
+aws bedrock list-foundation-models --region us-east-1 --query "modelSummaries[?contains(modelId, 'claude')]"
+
+# Ensure IAM role has bedrock:InvokeModel permission
+```
+
+---
+
 ## Document Control
 
 | Version | Date | Author | Changes |

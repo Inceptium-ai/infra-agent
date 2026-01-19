@@ -1244,6 +1244,79 @@ The system uses a multi-agent architecture with intent-based routing. The Chat A
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### AWS Credential Chain
+
+The infra-agent uses the **AWS SDK default credential chain** for all AWS API calls. This applies to both the agent CLI (running locally) and any tools that invoke `aws` CLI commands.
+
+**Credential Resolution Order:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    AWS CREDENTIAL CHAIN                              │
+│                  (checked in order, first match wins)                │
+├─────────────────────────────────────────────────────────────────────┤
+│ 1. Environment Variables                                             │
+│    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN      │
+│                                                                      │
+│ 2. Shared Credentials File                                           │
+│    ~/.aws/credentials (default profile or AWS_PROFILE)              │
+│                                                                      │
+│ 3. Shared Config File                                                │
+│    ~/.aws/config (supports SSO, assume role)                        │
+│                                                                      │
+│ 4. ECS Container Credentials                                         │
+│    Task IAM role (if running in ECS)                                │
+│                                                                      │
+│ 5. EC2 Instance Metadata                                             │
+│    Instance profile / IAM role (if running on EC2)                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Usage Scenarios:**
+
+| Scenario | Credential Source | Configuration |
+|----------|-------------------|---------------|
+| Local development | `~/.aws/credentials` | `aws configure` |
+| SSO authentication | `~/.aws/config` | `aws sso login --profile <name>` |
+| CI/CD pipeline | Environment variables | Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| Running on EC2 | Instance profile | Attach IAM role to instance |
+| Running in ECS | Task role | Configure task IAM role |
+
+**Profile Selection:**
+
+```bash
+# Use specific profile (optional)
+export AWS_PROFILE=my-profile
+
+# Or set in .env file
+AWS_PROFILE=my-profile
+```
+
+**Required IAM Permissions:**
+
+The infra-agent requires permissions for:
+- **EKS**: `eks:DescribeCluster`, `eks:ListNodegroups`, `eks:DescribeNodegroup`
+- **EC2**: `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus`, `ec2:DescribeVolumes`
+- **CloudWatch**: `logs:FilterLogEvents`, `logs:DescribeLogGroups`
+- **CloudFormation**: `cloudformation:DescribeStacks`, `cloudformation:DetectStackDrift`
+- **S3**: `s3:ListBuckets`, `s3:GetBucketEncryption` (for audits)
+- **IAM**: `iam:ListRoles`, `iam:GetRolePolicy` (for security audits)
+- **Bedrock**: `bedrock:InvokeModel` (for Claude LLM)
+
+**Verifying Credentials:**
+
+```bash
+# Check current identity
+aws sts get-caller-identity
+
+# Expected output:
+{
+    "UserId": "AIDAEXAMPLE",
+    "Account": "123456789012",
+    "Arn": "arn:aws:iam::123456789012:user/operator"
+}
+```
+
 ---
 
 ## Known Compliance Gaps
