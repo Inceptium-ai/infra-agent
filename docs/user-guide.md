@@ -67,14 +67,110 @@ Without the tunnel, any command that touches the Kubernetes API will fail with c
 ### Running the Agent
 
 ```bash
-# Interactive mode
-infra-agent pipeline --environment dev
+# Interactive chat mode (recommended)
+infra-agent chat -e dev
 
-# Single command mode
-infra-agent pipeline --prompt "Your request here" --environment dev
+# Pipeline mode with approval gates
+infra-agent pipeline -e dev
 
 # Dry-run mode (no actual deployments)
-infra-agent pipeline --prompt "Scale signoz to 3 replicas" --environment dev --dry-run
+infra-agent pipeline -e dev --dry-run
+```
+
+---
+
+## Quick Reference: Example Commands
+
+Here are 15 example prompts showing what you can do with infra-agent:
+
+### Investigation Examples (Troubleshooting)
+
+| # | What You Say | What Happens |
+|---|--------------|--------------|
+| 1 | `Why are SigNoz pods restarting?` | Checks pod events, logs, resource usage; identifies OOMKilled or CrashLoopBackOff; suggests fixes |
+| 2 | `Debug why the frontend is returning 503 errors` | Examines service endpoints, pod health, Istio config; finds unhealthy backends |
+| 3 | `Investigate high memory usage in signoz namespace` | Queries SigNoz metrics, kubectl top; identifies memory-hungry pods |
+| 4 | `Why are nodes showing NotReady?` | Checks node conditions, EC2 status, EKS nodegroup; finds disk pressure or network issues |
+
+### Audit Examples (Compliance & Cost)
+
+| # | What You Say | What Happens |
+|---|--------------|--------------|
+| 5 | `Audit NIST 800-53 compliance` | Checks SC-8 (mTLS), SC-28 (encryption), AC-6 (least privilege), AU-2 (logging); scores 0-100% |
+| 6 | `Run a security scan` | Checks IAM policies, public access, Trivy vulnerabilities, network policies; lists findings |
+| 7 | `Find cost optimization opportunities` | Queries Kubecost, finds idle pods, unattached EBS, oversized resources; estimates savings |
+| 8 | `Check for configuration drift` | Compares CloudFormation stacks and Helm releases against live state; lists drifted resources |
+
+### Change Examples (4-Agent Pipeline)
+
+| # | What You Say | What Happens |
+|---|--------------|--------------|
+| 9 | `Scale SigNoz frontend to 3 replicas` | Planning → IaC (updates Helm values) → Review → Deploy; creates PR, runs helm upgrade |
+| 10 | `Increase node group max size to 10` | Planning → IaC (updates CloudFormation) → Review → Deploy; creates PR, deploys stack |
+| 11 | `Enable Istio mTLS STRICT for signoz namespace` | Planning → IaC (creates PeerAuthentication) → Review → Deploy |
+
+### Create Examples (New Resources)
+
+| # | What You Say | What Happens |
+|---|--------------|--------------|
+| 12 | `Create an S3 bucket for logs with encryption` | Generates CloudFormation template with SSE, versioning, public access block; deploys |
+| 13 | `Create a new namespace called staging with Istio` | Generates namespace YAML with `istio-injection: enabled` label; applies |
+| 14 | `Add an IAM role for the demo app with S3 read access` | Generates CloudFormation with scoped IAM policy; deploys |
+
+### Query Examples (Information Only)
+
+| # | What You Say | What Happens |
+|---|--------------|--------------|
+| 15 | `List all pods in signoz namespace` | Runs `kubectl get pods -n signoz`; shows table |
+| 16 | `Show node status` | Runs `kubectl get nodes -o wide`; shows Ready/NotReady status |
+| 17 | `What Helm releases are installed?` | Runs `helm list -A`; shows all releases |
+
+### Example Session
+
+```
+$ infra-agent chat -e dev
+
+╭──────────────── infra-agent ────────────────╮
+│ AI Infrastructure Agent v0.1.0              │
+│ AWS EKS Management with NIST 800-53 R5      │
+╰─────────────────────────────────────────────╯
+
+Environment: DEV
+EKS Cluster: infra-agent-dev-cluster
+
+You: Why are SigNoz pods restarting?
+
+Agent: Investigating pods in signoz namespace...
+
+**Investigation Complete** (ID: inv-a1b2c3)
+
+**Root Cause:** ClickHouse pods hitting 256Mi memory limit under query load.
+
+**Findings:**
+- [HIGH] 15 OOMKilled events in past hour
+- [MEDIUM] Memory at 98% utilization
+
+**Recommendation:** Increase memory limit to 1Gi
+**IaC Change Required:** Yes - update infra/helm/values/signoz/values.yaml
+
+You: Update SigNoz ClickHouse memory limit to 1Gi
+
+Agent: Starting 4-agent pipeline...
+
+Step 1: Planning Agent → Plan generated
+Step 2: IaC Agent → Modified values.yaml, PR #42 created
+Step 3: Review Agent → Passed (no security issues)
+Step 4: Deploy Agent → helm upgrade complete
+
+**Pipeline Complete** - Successfully updated memory limit
+
+You: List pods in signoz namespace
+
+Agent:
+NAME                          READY   STATUS    RESTARTS   AGE
+signoz-clickhouse-0           1/1     Running   0          2m
+signoz-frontend-7d8f9b6c5     1/1     Running   0          1d
+...
 ```
 
 ---
