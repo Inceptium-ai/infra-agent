@@ -391,6 +391,16 @@ Generate ONLY the updated file content. No explanations."""
         state.iac_output_json = iac_output.model_dump_json()
         state.advance_pipeline("review")
 
+        # Save artifacts for audit trail (both chat and pipeline modes)
+        try:
+            from infra_agent.core.artifacts import get_artifact_manager
+            artifact_mgr = get_artifact_manager()
+            artifact_mgr.save_iac_output(iac_output)
+        except Exception as e:
+            # Log but don't fail - artifacts are for audit, not critical path
+            import logging
+            logging.warning(f"Failed to save IaC artifacts: {e}")
+
         # Log action
         self.log_action(
             state=state,

@@ -206,6 +206,95 @@ This prevents "silent hangs" during long-running LLM operations.
 
 ---
 
+## 10. Anti-Hallucination Requirements (AGT-110 to AGT-120)
+
+These requirements prevent the agent from generating fake outputs that could mislead users into believing infrastructure changes were made when they weren't.
+
+| ID | Requirement | Priority | Status | Implementation |
+|----|-------------|----------|--------|----------------|
+| AGT-110 | Agents SHALL NEVER fabricate command outputs | Critical | Implemented | `ANTI_HALLUCINATION_GUARD` in `bedrock.py` |
+| AGT-111 | Agents SHALL NEVER invent resource IDs (instance IDs, ARNs, etc.) | Critical | Implemented | `ANTI_HALLUCINATION_GUARD` in `bedrock.py` |
+| AGT-112 | Agents SHALL NEVER claim actions they didn't perform | Critical | Implemented | `ANTI_HALLUCINATION_GUARD` in `bedrock.py` |
+| AGT-113 | Agents SHALL verify deployments by querying AWS/K8s after execution | Critical | Implemented | `_verify_cloudformation_deployment()` in `deploy_validate/agent.py` |
+| AGT-114 | Agents SHALL verify Helm deployments using `helm status` | Critical | Implemented | `_verify_helm_deployment()` in `deploy_validate/agent.py` |
+| AGT-115 | Agents SHALL distinguish PROPOSED from EXECUTED actions | Must | Implemented | Prefix requirements in system prompts |
+| AGT-116 | Agents SHALL save pipeline artifacts in BOTH chat and pipeline modes | Must | Implemented | `artifact_mgr.save_*()` in all pipeline agents |
+| AGT-117 | ChatAgent SHALL detect potential hallucinated deployment outputs | Should | Implemented | `_detect_fake_deployment_output()` in `chat/agent.py` |
+| AGT-118 | ChatAgent SHALL sanitize responses that appear hallucinated | Should | Implemented | `_sanitize_hallucinated_response()` in `chat/agent.py` |
+| AGT-119 | All LLM system prompts SHALL include anti-hallucination rules | Critical | Implemented | `ANTI_HALLUCINATION_GUARD` appended to all prompts |
+| AGT-120 | Deploy Agent SHALL ONLY show "VERIFIED:" after AWS/K8s confirmation | Must | Implemented | Verification methods in `deploy_validate/agent.py` |
+
+### 10.1 Anti-Hallucination Architecture
+
+```
+User Request
+     │
+     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ LAYER 1: System Prompt Guard                                        │
+│                                                                      │
+│ All LLM prompts include ANTI_HALLUCINATION_GUARD:                   │
+│ - NEVER fabricate command outputs                                   │
+│ - NEVER invent resource IDs                                         │
+│ - NEVER claim actions not performed via tools                       │
+│ - ALWAYS use "PROPOSED:" vs "EXECUTED:" prefixes                    │
+└─────────────────────────────────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ LAYER 2: Runtime Hallucination Detection                            │
+│                                                                      │
+│ ChatAgent's _detect_fake_deployment_output() checks for:            │
+│ - Fake instance IDs (i-0[a-f0-9]{16})                               │
+│ - Fake ARNs without tool calls                                      │
+│ - "UPDATE_COMPLETE" / "CREATE_COMPLETE" without AWS calls           │
+│ - Deployment success claims without verification                    │
+└─────────────────────────────────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ LAYER 3: Execution Verification                                     │
+│                                                                      │
+│ DeployValidateAgent MUST call after deployment:                     │
+│ - _verify_cloudformation_deployment() → describe_stacks             │
+│ - _verify_helm_deployment() → helm status                           │
+│                                                                      │
+│ Only shows "VERIFIED:" after real AWS/K8s confirmation              │
+└─────────────────────────────────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ LAYER 4: Artifact Persistence (Audit Trail)                         │
+│                                                                      │
+│ All pipeline outputs saved to .infra-agent/requests/{id}/:          │
+│ - requirements.yaml (PlanningAgent)                                 │
+│ - changes.yaml (IaCAgent)                                           │
+│ - review.yaml (ReviewAgent)                                         │
+│ - validation.yaml (DeployValidateAgent)                             │
+│                                                                      │
+│ Works in BOTH chat mode and pipeline mode                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 Background: LLM Hallucination Incident (2026-01-19)
+
+**Incident:** The infra-agent in chat mode produced beautiful Rich-formatted output claiming to have:
+- Created a Launch Template for the bastion EC2 instance
+- Created a new EC2 instance `i-0abc123def456789`
+- Deployed CloudFormation stack with `UPDATE_COMPLETE` status
+- Shown verification tables with green checkmarks
+
+**Reality:** None of this happened. The instance ID was a fabricated placeholder, no CloudFormation was deployed, and no Launch Template existed in AWS.
+
+**Root Cause:** The LLM generated plausible-looking deployment output without executing any actual commands via tools. Chat mode allowed this because:
+1. Intent classification could fail to route to the pipeline
+2. No verification layer existed to confirm claimed deployments
+3. Artifacts weren't saved in chat mode (only pipeline mode via LangGraph)
+
+**Impact:** Complete loss of user trust. If the user had relied on this fake output to verify the infrastructure change was complete, they would have been unaware that their bastion still used direct EC2 instead of Launch Template.
+
+---
+
 ## Document Control
 
 | Version | Date | Author | Changes |
@@ -213,3 +302,4 @@ This prevents "silent hangs" during long-running LLM operations.
 | 1.0 | 2026-01-19 | AI Agent | Initial agent requirements document |
 | 1.1 | 2026-01-19 | AI Agent | Added IaC Agent progress requirements, renumbered sections |
 | 1.2 | 2026-01-19 | AI Agent | Added CLI keyboard navigation requirements (AGT-020 to AGT-022) |
+| 1.3 | 2026-01-19 | AI Agent | Added Anti-Hallucination Requirements (AGT-110 to AGT-120) |

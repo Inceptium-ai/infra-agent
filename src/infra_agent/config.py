@@ -111,6 +111,16 @@ class Settings(BaseSettings):
     # IaC Version
     iac_version: str = Field(default="1.0.0", description="Infrastructure as Code version")
 
+    # Git Configuration
+    git_platform: str = Field(
+        default="github",
+        description="Git platform for PR/MR creation: 'github' or 'gitlab'",
+    )
+    gitlab_url: Optional[str] = Field(
+        default=None,
+        description="GitLab instance URL (for self-hosted, e.g., 'https://gitlab.company.com')",
+    )
+
     @property
     def resource_prefix(self) -> str:
         """Generate resource prefix following kebab-case naming convention."""

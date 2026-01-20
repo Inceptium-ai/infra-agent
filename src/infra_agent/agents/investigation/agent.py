@@ -41,6 +41,18 @@ class InvestigationAgent(BaseAgent):
         super().__init__(agent_type=AgentType.INVESTIGATION, **kwargs)
         self.register_tools(INVESTIGATION_TOOLS)
 
+        # Register MCP tools for AWS and Git access
+        self._register_mcp_tools()
+
+    def _register_mcp_tools(self) -> None:
+        """Register MCP tools for AWS API and Git repository access."""
+        try:
+            from infra_agent.mcp.client import get_aws_tools, get_git_tools
+            self.register_tools(get_aws_tools())
+            self.register_tools(get_git_tools())
+        except Exception:
+            pass  # MCP tools optional
+
     async def process_pipeline(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Process pipeline state for LangGraph workflow.

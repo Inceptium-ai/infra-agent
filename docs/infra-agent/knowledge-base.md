@@ -448,7 +448,42 @@ SecurityGroupIngress:
 
 ---
 
-## 8. NIST 800-53 Quick Reference
+## 8. LLM Behavior Known Issues
+
+### 8.1 Hallucinated Deployment Outputs (CRITICAL)
+
+**Problem**: LLMs can generate convincing but completely fake deployment outputs, including fabricated resource IDs, command outputs, and success messages.
+
+**Example hallucinated output**:
+```
+✅ CloudFormation Stack: my-stack
+   └─ Status: UPDATE_COMPLETE
+   └─ New Instance: i-0abc123def456789  ← FAKE ID
+```
+
+**Why this happens**:
+- LLMs are trained to be helpful and generate plausible outputs
+- Beautiful formatting makes fake outputs look legitimate
+- Resource ID patterns (i-0xxx, lt-0xxx) are easy to fabricate
+
+**Solution** (implemented in infra-agent):
+1. **Layer 1**: System prompts with anti-hallucination rules
+2. **Layer 2**: Runtime detection of fake patterns
+3. **Layer 3**: Mandatory verification via AWS/K8s APIs after deployment
+4. **Layer 4**: Artifact persistence for audit trail
+
+**Agents MUST**:
+- NEVER claim deployment success without verification
+- ALWAYS call `_verify_cloudformation_deployment()` or `_verify_helm_deployment()`
+- Use `PROPOSED:` prefix for planned actions, `VERIFIED:` only after API confirmation
+
+**See**: `lessons-learned.md` for the 2026-01-19 incident details
+
+**Agents Affected**: ALL agents, especially Deploy/Validate Agent
+
+---
+
+## 9. NIST 800-53 Quick Reference
 
 ### Control Mappings for Common Resources
 
@@ -471,3 +506,4 @@ SecurityGroupIngress:
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-19 | AI Agent | Initial knowledge base |
+| 1.1 | 2026-01-19 | AI Agent | Added LLM Hallucinated Deployment Outputs section |

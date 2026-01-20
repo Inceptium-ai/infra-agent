@@ -29,6 +29,18 @@ class K8sAgent(BaseAgent):
         self._helm_values_path = Path(__file__).parent.parent.parent.parent.parent / "infra" / "helm" / "values"
         self._kubeconfig_set = False
 
+        # Register MCP tools for AWS and Git access
+        self._register_mcp_tools()
+
+    def _register_mcp_tools(self) -> None:
+        """Register MCP tools for AWS API and Git repository access."""
+        try:
+            from infra_agent.mcp.client import get_aws_tools, get_git_tools
+            self.register_tools(get_aws_tools())
+            self.register_tools(get_git_tools())
+        except Exception:
+            pass  # MCP tools optional
+
     async def process_pipeline(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Process pipeline state for LangGraph workflow.

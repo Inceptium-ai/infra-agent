@@ -303,6 +303,97 @@ src/infra_agent/
 
 ---
 
+## Anti-Hallucination Verification Layer
+
+The agent implements a 4-layer defense against LLM hallucination to ensure all claimed infrastructure changes are real.
+
+### Why This Matters
+
+On 2026-01-19, the agent hallucinated a complete CloudFormation deployment with fake instance IDs, fake Launch Template IDs, and beautiful Rich-formatted verification tables - none of which existed in AWS. This led to implementing mandatory verification.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         ANTI-HALLUCINATION LAYERS                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │ LAYER 1: System Prompt Guard (bedrock.py)                                 │  │
+│  │                                                                            │  │
+│  │ ANTI_HALLUCINATION_GUARD appended to ALL agent prompts:                   │  │
+│  │ - NEVER fabricate command outputs                                          │  │
+│  │ - NEVER invent resource IDs (i-xxx, arn:aws:, lt-xxx)                     │  │
+│  │ - NEVER claim actions not performed via tools                              │  │
+│  │ - Use PROPOSED: / EXECUTED: / VERIFIED: prefixes                           │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │ LAYER 2: Runtime Detection (chat/agent.py)                                │  │
+│  │                                                                            │  │
+│  │ _detect_fake_deployment_output() checks for:                               │  │
+│  │ - Fake EC2 instance IDs: i-0[a-f0-9]{16}                                  │  │
+│  │ - Fake Launch Template IDs: lt-0[a-f0-9]{16}                              │  │
+│  │ - CloudFormation status without tool calls: UPDATE_COMPLETE               │  │
+│  │ - Deployment success claims without verification                           │  │
+│  │                                                                            │  │
+│  │ If detected → _sanitize_hallucinated_response() replaces with warning     │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │ LAYER 3: Execution Verification (deploy_validate/agent.py)                │  │
+│  │                                                                            │  │
+│  │ After ANY deployment, MUST call:                                          │  │
+│  │                                                                            │  │
+│  │ CloudFormation:                                                            │  │
+│  │   result = _verify_cloudformation_deployment(stack_name)                  │  │
+│  │   → boto3.client('cloudformation').describe_stacks()                       │  │
+│  │   → Returns: {verified: bool, stack_status: str, outputs: dict}            │  │
+│  │                                                                            │  │
+│  │ Helm:                                                                      │  │
+│  │   result = _verify_helm_deployment(release_name, namespace)               │  │
+│  │   → subprocess.run(['helm', 'status', release_name])                       │  │
+│  │   → Returns: {verified: bool, status: str, revision: int}                  │  │
+│  │                                                                            │  │
+│  │ Only "VERIFIED:" shown after real AWS/K8s API confirmation                 │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                       │                                          │
+│                                       ▼                                          │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │ LAYER 4: Artifact Persistence (all pipeline agents)                       │  │
+│  │                                                                            │  │
+│  │ All agents save artifacts to .infra-agent/requests/{id}/:                 │  │
+│  │                                                                            │  │
+│  │ PlanningAgent  → requirements.yaml                                        │  │
+│  │ IaCAgent       → changes.yaml                                             │  │
+│  │ ReviewAgent    → review.yaml                                              │  │
+│  │ DeployAgent    → validation.yaml                                          │  │
+│  │                                                                            │  │
+│  │ Works in BOTH chat mode and pipeline mode (via get_artifact_manager())    │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Files
+
+| File | Layer | Purpose |
+|------|-------|---------|
+| `src/infra_agent/llm/bedrock.py` | 1 | `ANTI_HALLUCINATION_GUARD` constant appended to all prompts |
+| `src/infra_agent/agents/chat/agent.py` | 2 | `_detect_fake_deployment_output()`, `_sanitize_hallucinated_response()` |
+| `src/infra_agent/agents/deploy_validate/agent.py` | 3 | `_verify_cloudformation_deployment()`, `_verify_helm_deployment()` |
+| `src/infra_agent/agents/planning/agent.py` | 4 | Artifact saving |
+| `src/infra_agent/agents/iac/agent.py` | 4 | Artifact saving |
+| `src/infra_agent/agents/review/agent.py` | 4 | Artifact saving |
+
+### Requirements
+
+See `requirements.md` section 10 (AGT-110 to AGT-120) for formal requirements.
+
+---
+
 ## Related Documents
 
 - [user-guide.md](user-guide.md) - How to use the CLI
@@ -317,3 +408,4 @@ src/infra_agent/
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-19 | AI Agent | Initial agent architecture document |
+| 1.1 | 2026-01-19 | AI Agent | Added Anti-Hallucination Verification Layer section |

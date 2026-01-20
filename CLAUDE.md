@@ -743,6 +743,7 @@ if "deploy" in user_input.lower():  # Matches "deployed", "deployment", etc.
 - **NEVER scale to fewer than 3 nodes** - EBS volumes are AZ-bound; fewer nodes causes StatefulSet failures. ALWAYS use `scripts/startup.sh` which enforces this
 - **NEVER create custom SigNoz dashboards** - Use official dashboards from https://github.com/SigNoz/dashboards. Custom queries have undocumented format requirements and fail silently.
 - **NEVER enable Istio on namespaces with Jobs/CronJobs** - Sidecars don't terminate when jobs complete, leaving pods in Error state forever. Velero namespace must have `istio-injection: disabled`.
+- **NEVER let infra-agent generate fake deployment outputs** - The LLM MUST NOT fabricate resource IDs, command outputs, or deployment success claims. All deployments MUST be verified by querying AWS/K8s APIs. See `docs/infra-agent/lessons-learned.md` for the 2026-01-19 hallucination incident.
 
 ## CRITICAL: IaC is the Source of Truth
 

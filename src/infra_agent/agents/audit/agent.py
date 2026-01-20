@@ -44,6 +44,29 @@ class AuditAgent(BaseAgent):
         super().__init__(agent_type=AgentType.AUDIT, **kwargs)
         self.register_tools(AUDIT_TOOLS)
 
+        # Register MCP tools for AWS and Git access
+        self._register_mcp_tools()
+
+    def _register_mcp_tools(self) -> None:
+        """Register MCP tools for AWS API and Git repository access."""
+        try:
+            from infra_agent.mcp.client import get_aws_tools, get_git_tools
+
+            # Register AWS tools (aws_api_call, list_aws_services, etc.)
+            aws_tools = get_aws_tools()
+            self.register_tools(aws_tools)
+
+            # Register Git tools (git_read_file, git_get_iac_files, etc.)
+            git_tools = get_git_tools()
+            self.register_tools(git_tools)
+
+        except ImportError as e:
+            # MCP tools not available - continue without them
+            pass
+        except Exception as e:
+            # Log but don't fail - audit can still run with limited tools
+            pass
+
     async def process_pipeline(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Process pipeline state for LangGraph workflow.
@@ -282,10 +305,32 @@ Provide:
 
         elif request.audit_type == AuditType.DRIFT:
             return base_prompt + """
-Run configuration drift detection:
-1. Check CloudFormation drift with cfn_drift
-2. Check Helm drift with helm_drift for key releases
-3. Check K8s drift with k8s_drift for deployments
+Run configuration drift detection using available tools:
+
+## AWS Tools (MCP):
+- aws_api_call(service, operation, parameters) - Query any AWS service
+  Examples:
+  - aws_api_call(service="cloudformation", operation="list_stacks")
+  - aws_api_call(service="cloudformation", operation="detect_stack_drift", parameters={"StackName": "stack-name"})
+  - aws_api_call(service="ec2", operation="describe_instances")
+
+## Git Tools (MCP):
+- git_read_file(repo, path, ref) - Read IaC files from Git repository
+- git_list_files(repo, path, ref) - List files in repository
+- git_get_iac_files(repo, ref) - Get summary of all IaC files (CloudFormation, Helm)
+
+## Other Tools:
+- cfn_drift - Check CloudFormation drift
+- helm_drift - Check Helm drift for key releases
+- k8s_drift - Check K8s drift for deployments
+
+## Steps:
+1. Use aws_api_call to list CloudFormation stacks
+2. Use git_get_iac_files to discover IaC files in the repository
+3. Compare deployed stacks with IaC files in Git
+4. Use aws_api_call with detect_stack_drift for detailed drift analysis
+
+For the infra-agent project, use repo="Inceptium-ai/infra-agent" on GitHub.
 
 Provide:
 - Drifted resources
